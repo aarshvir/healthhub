@@ -94,6 +94,43 @@ def test_switching_window_recomputes(env):
     assert analytics.self_check(r7) == [] and analytics.self_check(r30) == []
 
 
+def test_full_cycle_writes_all_artifacts(env):
+    st, out = env
+    import journal
+    import wearables
+    dub_dates = [(NOW - timedelta(days=k)).astimezone(timezone.utc) for k in (1,)]
+    log_csv = (
+        "entry_id,date,time,type,item,net_carbs_g,mood_1to5,energy_1to5,tags,note\n"
+        "1,2026-06-27,14:00,meal,Paneer,38,4,3,meal; +walk,lunch\n"
+        "2,2026-06-27,21:00,mood,evening,,3,2,,checkin\n"
+    )
+    wear_rows = [
+        ["Date", "Source(s)", "Timezone", "Steps", "Distance (m)", "Elevation (m)",
+         "Floors climbed", "Total Calories (kcal)", "Active Calories (kcal)",
+         "Power min (W)", "Power max (W)", "Power avg (W)", "Speed min (m/s)",
+         "Speed max (m/s)", "Speed avg (m/s)", "VO2 max min", "VO2 max max",
+         "VO2 max avg", "Wheelchair pushes", "Start Date/Time", "Exercise Name",
+         "Duration (min)"],
+        ["2026-06-27", "com.sec.android.app.shealth", "Asia/Dubai", "7000", "", "", "",
+         "1600", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ]
+    result = engine.run_cycle(
+        store=st, glucose_source=glucose.FixtureSource(_core_readings()),
+        log_source=journal.CsvLogSource(text=log_csv),
+        wearables_source=wearables.FixtureRows(wear_rows),
+        now=NOW, window_days=7, walk_adherence=0.8, dashboard=True,
+        dashboard_windows=(7, 14, 30), out_dir=str(out))
+    assert result.ok, result.self_check_violations
+    assert (out / "metrics.json").exists()
+    assert (out / "trend.json").exists()
+    assert (out / "wearables.json").exists()
+    assert (out / "dashboard.html").exists()
+    html = (out / "dashboard.html").read_text()
+    assert "last-known-good, not live" in html and "Analytics" in html
+    assert result.metrics["mean_mgdl"]["value"] == pytest.approx(150.0)
+    assert isinstance(result.insights_text, str)
+
+
 def test_cycle_runs_without_source_on_prepopulated_store(env):
     st, out = env
     glucose.sync(st, glucose.FixtureSource(_core_readings()), now=NOW)

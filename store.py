@@ -179,6 +179,16 @@ class Store:
             "SELECT ts, subject, glucose_mgdl, source FROM glucose ORDER BY ts").fetchall()
         return self._glucose_frame(rows)
 
+    def latest_glucose(self) -> dict | None:
+        """The most recent stored reading as {ts, value, subject, source}, or None."""
+        r = self.conn.execute(
+            "SELECT ts, subject, glucose_mgdl, source FROM glucose ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        if r is None:
+            return None
+        return {"ts": r["ts"], "value": float(r["glucose_mgdl"]),
+                "subject": r["subject"], "source": r["source"]}
+
     def prune(self, *, now=None, retention_days: int = RETENTION_DAYS) -> int:
         """Delete readings older than the retention window. Returns rows deleted."""
         now = integrity.now_utc() if now is None else now

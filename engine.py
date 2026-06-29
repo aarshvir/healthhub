@@ -15,9 +15,18 @@ import os
 import numpy as np
 
 import analytics
+import assess as assess_mod
+import build_dashboard
 import clinical
+import experiments as experiments_mod
+import food_impact
 import glucose as glucose_mod
+import insights as insights_mod
 import integrity
+import journal
+import mood_energy
+import symptoms
+import wearables as wearables_mod
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -29,6 +38,11 @@ class CycleResult:
     trend: dict
     quarantined: list
     self_check_violations: list
+    assessment: dict = dataclasses.field(default_factory=dict)
+    insights_text: str = ""
+    food_ranking: list = dataclasses.field(default_factory=list)
+    experiments: list = dataclasses.field(default_factory=list)
+    artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -57,40 +71,78 @@ def _write_json(obj, path: str) -> None:
         json.dump(obj, fh, indent=2, sort_keys=True, default=str)
 
 
-def run_cycle(*, store, glucose_source=None, now=None, window_days: int = 14,
-              subject: str = "patient", walk_adherence: float | None = None,
-              out_dir: str = ".", prune_retention: int = 500,
-              sleep=None) -> CycleResult:
-    """Run a full cycle against *store* and write metrics.json + trend.json to *out_dir*."""
+def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=None,
+              now=None, window_days: int = 14, subject: str = "patient",
+              walk_adherence: float | None = None, out_dir: str = ".",
+              prune_retention: int = 500, dashboard: bool = False,
+              dashboard_windows=analytics.STANDARD_WINDOWS, sleep=None) -> CycleResult:
+    """Run a full cycle against *store* and write the artifacts to *out_dir*.
+
+    Always: pull glucose -> prune -> §B metrics -> trend -> self-checks -> metrics.json + trend.json.
+    Optionally: ingest the journal log (-> food ranking, experiments, insights), build
+    wearables.json, and render dashboard.html (last-known-good with age, quarantine excluded).
+    """
     now = integrity.now_utc() if now is None else now
+    artifacts: dict = {}
 
     n_stored = 0
     if glucose_source is not None:
-        res = glucose_mod.sync(store, glucose_source, now=now, subject=subject, sleep=sleep)
-        n_stored = res.n_stored
+        n_stored = glucose_mod.sync(store, glucose_source, now=now, subject=subject,
+                                    sleep=sleep).n_stored
+    if log_source is not None:
+        journal.ingest(store, log_source, now=now)
     store.prune(now=now, retention_days=prune_retention)
 
     window_df = store.glucose_last_days(window_days, now=now)
     metrics = clinical.compute_metrics(window_df, now=now, subject=subject,
                                        walk_adherence=walk_adherence)
     trend = analytics.compute(store, window_days=window_days, now=now)
-
-    violations = (store.self_check(now=now)
-                  + analytics.self_check(trend)
+    violations = (store.self_check(now=now) + analytics.self_check(trend)
                   + _metrics_self_check(metrics))
+
+    # log-driven analytics (only meaningful once a journal exists)
+    food_ranking = food_impact.rank_foods(store, now=now)
+    experiment_results = experiments_mod.compare_all_tags(store, now=now)
+    assessment = assess_mod.assess(metrics, window_days=window_days)
+    violations += assess_mod.self_check(assessment) + experiments_mod.self_check(experiment_results)
+
+    findings = insights_mod.rank(
+        food_ranking=food_ranking, experiment_results=experiment_results,
+        symptom_result=symptoms.analyze(store, window_days=max(90, window_days), now=now),
+        mood_result=mood_energy.analyze(store, window_days=max(90, window_days), now=now))
+    insights_text = insights_mod.narrate(findings, metrics=metrics)
 
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         clinical.write_metrics(metrics, os.path.join(out_dir, "metrics.json"))
         _write_json(trend, os.path.join(out_dir, "trend.json"))
+        artifacts["metrics"] = os.path.join(out_dir, "metrics.json")
+        artifacts["trend"] = os.path.join(out_dir, "trend.json")
+
+    if wearables_source is not None:
+        wears = wearables_mod.build(wearables_source, now=now)
+        violations += wearables_mod.self_check(wears, now=now)
+        if out_dir:
+            artifacts["wearables"] = wearables_mod.write_wearables(
+                wears, os.path.join(out_dir, "wearables.json"))
 
     quarantined = store.quarantined()
+    if dashboard:
+        trend_by_window = {int(w): analytics.compute(store, window_days=int(w), now=now)
+                           for w in dashboard_windows}
+        cockpit = build_dashboard.build_cockpit(
+            metrics=metrics, trend_by_window=trend_by_window,
+            latest_glucose=store.latest_glucose(), food_ranking=food_ranking,
+            experiments=experiment_results, assessment=assessment,
+            insights_text=insights_text, quarantine=quarantined, now=now)
+        violations += build_dashboard.self_check(cockpit)
+        if out_dir:
+            artifacts["dashboard"] = build_dashboard.write_dashboard(
+                build_dashboard.render(cockpit), os.path.join(out_dir, "dashboard.html"))
+
     return CycleResult(
-        generated_at=now.isoformat(),
-        n_stored=n_stored,
-        n_quarantined=len(quarantined),
-        metrics=metrics,
-        trend=trend,
-        quarantined=quarantined,
-        self_check_violations=violations,
+        generated_at=now.isoformat(), n_stored=n_stored, n_quarantined=len(quarantined),
+        metrics=metrics, trend=trend, quarantined=quarantined,
+        self_check_violations=violations, assessment=assessment, insights_text=insights_text,
+        food_ranking=food_ranking, experiments=experiment_results, artifacts=artifacts,
     )

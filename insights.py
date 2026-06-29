@@ -38,8 +38,9 @@ def rank(*, food_ranking=None, experiment_results=None, symptom_result=None,
                 round(eff, 1), n=n_min, signal=e.get("signal_strength"),
                 detail=e.get("causal_label"), score=abs(eff) * min(n_min, 5)))
 
-    if symptom_result and symptom_result.get("lift", {}).get("lift") is not None:
-        lift = symptom_result["lift"]
+    sym_lift = (symptom_result or {}).get("lift") or {}
+    if sym_lift.get("lift") is not None:
+        lift = sym_lift
         findings.append(_finding(
             "symptom", f"symptoms {lift['lift']:.1f}× more likely on high-glucose days",
             round(lift["lift"], 2), n=symptom_result.get("n_days", 0),

@@ -233,16 +233,33 @@ document.querySelectorAll('.winbtn').forEach(b=>b.classList.remove('active'));
 var bb=document.getElementById('winbtn-'+w);if(bb)bb.classList.add('active');}
 """
 
+# Recompute the glucose age + freshness on the DEVICE clock, so an offline PWA never shows a
+# stale "as of" age or pretends a frozen value is live (§A rule 6). Mirrors integrity's
+# fresh<=6h / stale<=72h / else expired thresholds.
+_FRESH_JS = """
+function hhAge(ms){var s=Math.abs(ms)/1000;if(s<3600)return Math.round(s/60)+'m';
+if(s<86400)return (s/3600).toFixed(1)+'h';return (s/86400).toFixed(1)+'d';}
+function hhRefresh(){if(!window.HH||!HH.asOf)return;var ageMs=Date.now()-Date.parse(HH.asOf);
+var h=ageMs/3600000,badge;if(ageMs< -5*60000)badge='⚠️ FUTURE';else if(h<=HH.freshH)badge='🟢 FRESH';
+else if(h<=HH.staleH)badge='🟡 STALE';else badge='🔴 EXPIRED';
+var a=document.getElementById('hdrAge');if(a)a.textContent=hhAge(ageMs);
+var b=document.getElementById('hdrBadge');if(b)b.textContent=badge;}
+hhRefresh();setInterval(hhRefresh,60000);
+"""
+
 
 def render(cockpit: dict) -> str:
     g = cockpit["header"].get("glucose")
     if g:
-        hdr = (f'<div class="hdr-glucose">{_fmt(g.get("value"),0)} mg/dL · '
-               f'{_freshness_badge(g.get("state"))}</div>'
-               f'<div class="hdr-age">as of {_esc(g.get("as_of"))} ({_esc(g.get("age"))} ago) — '
+        hdr = (f'<div class="hdr-glucose"><span id="hdrVal">{_fmt(g.get("value"),0)}</span> '
+               f'mg/dL · <span id="hdrBadge">{_freshness_badge(g.get("state"))}</span></div>'
+               f'<div class="hdr-age">as of <span id="hdrAsOf">{_esc(g.get("as_of"))}</span> '
+               f'(<span id="hdrAge">{_esc(g.get("age"))}</span> ago) — '
                f'last-known-good, not live</div>')
+        cfg = json.dumps({"asOf": g.get("as_of"), "freshH": 6, "staleH": 72})
     else:
         hdr = '<div class="hdr-glucose">No glucose data</div>'
+        cfg = "null"
 
     bodies = {
         "Today": _today_tab(cockpit), "Analytics": _analytics_tab(cockpit),
@@ -255,9 +272,10 @@ def render(cockpit: dict) -> str:
                    f'<h2>{t}</h2>{bodies[t]}</section>' for i, t in enumerate(TABS))
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<link rel="manifest" href="manifest.json">'
             f'<title>HealthHub</title><style>{_CSS}</style></head><body>'
             f'<header>{hdr}</header><nav>{nav}</nav><main>{tabs}</main>'
-            f'<script>{_JS}</script></body></html>')
+            f'<script>window.HH={cfg};{_JS}{_FRESH_JS}</script></body></html>')
 
 
 def write_dashboard(html_str: str, path: str = "dashboard.html") -> str:
