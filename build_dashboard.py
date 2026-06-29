@@ -245,6 +245,7 @@ else if(h<=HH.staleH)badge='🟡 STALE';else badge='🔴 EXPIRED';
 var a=document.getElementById('hdrAge');if(a)a.textContent=hhAge(ageMs);
 var b=document.getElementById('hdrBadge');if(b)b.textContent=badge;}
 hhRefresh();setInterval(hhRefresh,60000);
+if('serviceWorker' in navigator){navigator.serviceWorker.register('service-worker.js').catch(function(){});}
 """
 
 
