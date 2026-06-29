@@ -44,6 +44,8 @@ jobs:
           python examples/generate_sample.py
           healthhub-metrics examples/glucose_sample.csv -o metrics.json --walk-adherence 0.8
           python -c "import json; d=json.load(open('metrics.json')); assert len(d) == 22; print('CLI smoke OK')"
+          # verify the engine modules are packaged in the wheel (import from /tmp, not the repo tree)
+          cd /tmp && python -c "import engine, store, glucose, analytics, custom, build_dashboard, wearables; print('engine packaged OK')"
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -40,8 +40,13 @@ Repository = "https://github.com/aarshvir/healthhub"
 
 [tool.setuptools]
 # Flat layout: these top-level modules ARE the package (integrity is the trust boundary;
-# _rules is its private primitives module).
-py-modules = ["integrity", "_rules", "clinical", "narration", "cli"]
+# _rules is its private primitives module). Everything routes through integrity.
+py-modules = [
+    "integrity", "_rules", "clinical", "narration", "cli",
+    "store", "glucose", "analytics", "engine", "journal", "statutil",
+    "food_impact", "experiments", "symptoms", "mood_energy", "wearables",
+    "assess", "insights", "custom", "build_dashboard",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
