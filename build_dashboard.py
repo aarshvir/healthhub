@@ -14,7 +14,7 @@ import json
 
 import integrity
 
-TABS = ("Today", "Analytics", "Food", "Experiments", "Protocol", "Export")
+TABS = ("Today", "Analytics", "Food", "Experiments", "Custom", "Protocol", "Export")
 _RANGE_LOW, _RANGE_HIGH = 70.0, 180.0
 _Y_MIN, _Y_MAX = 40.0, 300.0
 
@@ -92,7 +92,7 @@ def _agp_svg(agp: list, *, width=720, height=240) -> str:
 
 def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=None,
                   food_ranking=None, experiments=None, assessment=None,
-                  insights_text="", quarantine=None, now=None) -> dict:
+                  insights_text="", quarantine=None, custom_cards=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
@@ -109,6 +109,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "wearables": wearables or {}, "food_ranking": food_ranking or [],
         "experiments": experiments or [], "assessment": assessment or {},
         "insights_text": insights_text or "", "quarantine": quarantine or [],
+        "custom_cards": custom_cards or [],
     }
 
 
@@ -185,6 +186,35 @@ def _experiments_tab(c) -> str:
             f'<th>signal</th><th>causal?</th></tr></thead><tbody>{rows}</tbody></table>')
 
 
+def _custom_card(card) -> str:
+    if card.get("error"):
+        return (f'<div class="tile"><div class="t-title">{_esc(card.get("title"))}</div>'
+                f'<div class="warn">{_esc(card["error"])}</div></div>')
+    groups = [g for g in card.get("groups", []) if g.get("value") is not None]
+    mx = max((abs(g["value"]) for g in groups), default=1) or 1
+    bars = "".join(
+        f'<div class="bar-row"><span class="bar-lbl">{_esc(g["group"])} '
+        f'(n={_esc(g["n"])})</span>'
+        f'<span class="bar"><i style="width:{max(2, 100*abs(g["value"])/mx):.0f}%"></i></span>'
+        f'<span class="bar-val">{_fmt(g["value"])}</span></div>' for g in groups)
+    if not groups:
+        bars = '<div class="muted">No data matched.</div>'
+    return (f'<div class="card"><div class="card-title">{_esc(card.get("title"))}</div>'
+            f'<div class="card-filter">filter: {_esc(card.get("filter"))}</div>'
+            f'<div class="bars">{bars}</div>'
+            f'<div class="card-assess">{_esc(card.get("assessment"))}</div>'
+            f'<div class="t-foot">overall n={_esc((card.get("overall") or {}).get("n"))} · '
+            f'src: custom analysis</div></div>')
+
+
+def _custom_tab(c) -> str:
+    cards = c.get("custom_cards", [])
+    if not cards:
+        return ('<p class="muted">No saved analyses yet. Describe one in chat — Claude writes '
+                'the spec once into analyses.json; the engine then recomputes it every cycle.</p>')
+    return '<div class="cards">' + "".join(_custom_card(card) for card in cards) + "</div>"
+
+
 def _protocol_tab(c) -> str:
     a = c["assessment"]
     lines = "".join(f"<li>{_esc(l['text'])}</li>" for l in a.get("lines", []))
@@ -220,6 +250,13 @@ padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#256
 .agp{width:100%;height:auto;background:#0b1220;border-radius:10px;margin:8px 0}
 .muted{color:#94a3b8;font-size:13px}.warn{color:#f59e0b}.insight{color:#a5b4fc;margin-top:10px}
 .tab{display:none}.tab.active{display:block}pre{white-space:pre-wrap;background:#0b1220;padding:8px;border-radius:8px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:12px}
+.card-title{font-weight:700}.card-filter{font-size:11px;color:#64748b;margin:4px 0 8px}
+.bar-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
+.bar-lbl{flex:0 0 120px;color:#cbd5e1}.bar{flex:1;background:#0b1220;border-radius:6px;height:12px;overflow:hidden}
+.bar i{display:block;height:100%;background:#3b82f6}.bar-val{flex:0 0 48px;text-align:right;color:#e2e8f0}
+.card-assess{font-size:12px;color:#a5b4fc;margin-top:8px}
 """
 
 _JS = """
@@ -265,6 +302,7 @@ def render(cockpit: dict) -> str:
     bodies = {
         "Today": _today_tab(cockpit), "Analytics": _analytics_tab(cockpit),
         "Food": _food_tab(cockpit), "Experiments": _experiments_tab(cockpit),
+        "Custom": _custom_tab(cockpit),
         "Protocol": _protocol_tab(cockpit), "Export": _export_tab(cockpit),
     }
     nav = "".join(f'<button id="navbtn-{t}" class="{"active" if i==0 else ""}" '

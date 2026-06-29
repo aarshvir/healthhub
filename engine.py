@@ -18,6 +18,7 @@ import analytics
 import assess as assess_mod
 import build_dashboard
 import clinical
+import custom as custom_mod
 import experiments as experiments_mod
 import food_impact
 import glucose as glucose_mod
@@ -42,6 +43,7 @@ class CycleResult:
     insights_text: str = ""
     food_ranking: list = dataclasses.field(default_factory=list)
     experiments: list = dataclasses.field(default_factory=list)
+    custom_cards: list = dataclasses.field(default_factory=list)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -75,7 +77,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
               now=None, window_days: int = 14, subject: str = "patient",
               walk_adherence: float | None = None, out_dir: str = ".",
               prune_retention: int = 500, dashboard: bool = False,
-              dashboard_windows=analytics.STANDARD_WINDOWS, sleep=None) -> CycleResult:
+              dashboard_windows=analytics.STANDARD_WINDOWS,
+              analyses_path: str | None = "analyses.json", sleep=None) -> CycleResult:
     """Run a full cycle against *store* and write the artifacts to *out_dir*.
 
     Always: pull glucose -> prune -> §B metrics -> trend -> self-checks -> metrics.json + trend.json.
@@ -112,6 +115,12 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         mood_result=mood_energy.analyze(store, window_days=max(90, window_days), now=now))
     insights_text = insights_mod.narrate(findings, metrics=metrics)
 
+    # saved custom analyses: executed deterministically every cycle (no LLM math at run time)
+    custom_cards = (custom_mod.run_registry(store, path=analyses_path, now=now)
+                    if analyses_path else [])
+    for card in custom_cards:
+        violations += custom_mod.result_self_check(card)
+
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         clinical.write_metrics(metrics, os.path.join(out_dir, "metrics.json"))
@@ -134,7 +143,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             metrics=metrics, trend_by_window=trend_by_window,
             latest_glucose=store.latest_glucose(), food_ranking=food_ranking,
             experiments=experiment_results, assessment=assessment,
-            insights_text=insights_text, quarantine=quarantined, now=now)
+            insights_text=insights_text, quarantine=quarantined,
+            custom_cards=custom_cards, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
@@ -144,5 +154,6 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         generated_at=now.isoformat(), n_stored=n_stored, n_quarantined=len(quarantined),
         metrics=metrics, trend=trend, quarantined=quarantined,
         self_check_violations=violations, assessment=assessment, insights_text=insights_text,
-        food_ranking=food_ranking, experiments=experiment_results, artifacts=artifacts,
+        food_ranking=food_ranking, experiments=experiment_results,
+        custom_cards=custom_cards, artifacts=artifacts,
     )
