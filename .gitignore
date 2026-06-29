@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+# generated analytics artifact (produced by clinical.write_metrics)
+/metrics.json
+.venv/
+venv/
