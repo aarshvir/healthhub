@@ -4,5 +4,9 @@ __pycache__/
 .hypothesis/
 # generated analytics artifact (produced by clinical.write_metrics)
 /metrics.json
+# build artifacts
+build/
+dist/
+*.egg-info/
 .venv/
 venv/

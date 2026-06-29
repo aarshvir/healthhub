@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "healthhub"
+version = "0.1.0"
+description = "Safety-first health-data core: an integrity trust boundary + glucose analytics."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "healthhub" }]
+keywords = ["health", "cgm", "glucose", "data-integrity", "diabetes"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Intended Audience :: Healthcare Industry",
+]
+# Runtime deps use compatible ranges; requirements.txt holds the exact, fully-pinned set
+# used for reproducible installs and CI (see tests/test_requirements.py).
+dependencies = [
+    "numpy>=2.4,<3",
+    "pandas>=3,<4",
+    "python-dateutil>=2.9,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "hypothesis==6.155.7",
+    "freezegun==1.5.5",
+    "build>=1.5",
+]
+
+[project.scripts]
+healthhub-metrics = "cli:main"
+
+[project.urls]
+Repository = "https://github.com/aarshvir/healthhub"
+
+[tool.setuptools]
+# Flat layout: these top-level modules ARE the package (integrity is the trust boundary;
+# _rules is its private primitives module).
+py-modules = ["integrity", "_rules", "clinical", "narration", "cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra -q"

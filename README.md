@@ -65,18 +65,44 @@ the range/tokenizer primitives, or imports the private `_rules`/`dateutil` or pr
 integrity symbols. The public surface (`integrity.__all__`) is frozen and asserted, plus a
 runtime tripwire confirms the guards are actually exercised.
 
-## Develop
+## Install & build
 
 ```bash
-pip install -r requirements.txt   # all versions pinned
-pytest                            # 124 tests
+pip install -r requirements.txt      # pinned runtime + test deps (reproducible)
+# or, as a package:
+pip install -e ".[dev]"              # editable install + dev extras
+python -m build                      # -> dist/healthhub-0.1.0-{.whl,.tar.gz}
 ```
+
+## Run (CLI)
+
+The `healthhub-metrics` console script reads a glucose CSV
+(`subject, measured_at, glucose_mgdl`; `measured_at` must be timezone-aware) and writes
+`metrics.json`:
+
+```bash
+python examples/generate_sample.py                 # writes examples/glucose_sample.csv (3 days, 15-min)
+healthhub-metrics examples/glucose_sample.csv -o metrics.json --walk-adherence 0.8
+# options: --subject, --window-start/--window-end (ISO), --source-label, --quiet
+```
+
+`make help` lists the convenience targets (`install`, `test`, `build`, `install-wheel`, `example`, `clean`).
+
+## Develop / test
+
+```bash
+make test        # pytest: 126 tests incl. the architecture enforcement test
+```
+
+CI (`.github/workflows/ci.yml`) runs the suite on Python 3.11/3.12 and builds + smoke-tests the wheel.
 
 ## Layout
 
 ```
-integrity.py   _rules.py (private primitives)   clinical.py   narration.py
-requirements.txt   pytest.ini
+integrity.py   _rules.py (private primitives)   clinical.py   narration.py   cli.py
+pyproject.toml   requirements.txt   pytest.ini   Makefile
+examples/  generate_sample.py   glucose_sample.csv
 tests/  test_sanitize.py test_freshness.py test_validate.py test_cache.py
         test_clinical.py test_narration.py test_architecture.py test_requirements.py
+.github/workflows/ci.yml
 ```
