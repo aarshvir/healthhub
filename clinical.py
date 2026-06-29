@@ -288,29 +288,40 @@ def compute_metrics(
     clean = report.clean
     data_ok = report.ok
 
-    # Normalize timestamps to UTC then to display tz (Asia/Dubai) for time-of-day metrics.
+    # Normalize timestamps to numpy arrays (epoch-ns + local hour/minute) and do ALL masking
+    # and sorting in numpy. We deliberately never reorder a pandas datetimelike column (via
+    # .iloc[array] or sort_values): pandas' datetimelike `take` can segfault on some
+    # numpy/pandas/CPython build combinations. Working in numpy is both robust and faster.
     if len(clean):
         measured_utc = pd.to_datetime(clean["measured_at"], utc=True)
         local = measured_utc.dt.tz_convert(ZoneInfo(DISPLAY_TZ))
-        mask = pd.Series(True, index=clean.index)
+        epoch0 = pd.Timestamp("1970-01-01", tz="UTC")
+        epoch_ns = ((measured_utc - epoch0) // pd.Timedelta(1, "ns")).to_numpy()
+        hour_arr = local.dt.hour.to_numpy()
+        minute_arr = local.dt.minute.to_numpy()
+        value_arr = clean["value"].to_numpy(dtype=float)
+
         if window is not None:
             start, end = window
-            start_utc = integrity.freshness(start, now=evaluated_at).measured_at
-            end_utc = integrity.freshness(end, now=evaluated_at).measured_at
-            mask = (measured_utc >= start_utc) & (measured_utc <= end_utc)
-        sel = clean[mask]
-        order = pd.to_datetime(sel["measured_at"], utc=True).argsort()
-        sel = sel.iloc[np.asarray(order)]
-        values = sel["value"].to_numpy(dtype=float)
-        local_sel = local[mask].iloc[np.asarray(order)]
-        local_hours = local_sel.dt.hour.to_numpy()
-        slots = (local_sel.dt.hour.to_numpy() * 60 + local_sel.dt.minute.to_numpy()) // 15
-        measured_sel_utc = measured_utc[mask].iloc[np.asarray(order)]
+            start_ns = (pd.Timestamp(integrity.freshness(start, now=evaluated_at).measured_at)
+                        - epoch0) // pd.Timedelta(1, "ns")
+            end_ns = (pd.Timestamp(integrity.freshness(end, now=evaluated_at).measured_at)
+                      - epoch0) // pd.Timedelta(1, "ns")
+            mask_arr = (epoch_ns >= start_ns) & (epoch_ns <= end_ns)
+        else:
+            mask_arr = np.ones(epoch_ns.shape, dtype=bool)
+
+        order = np.argsort(epoch_ns[mask_arr], kind="stable")
+        values = value_arr[mask_arr][order]
+        local_hours = hour_arr[mask_arr][order].astype(np.int64)
+        minutes_sorted = minute_arr[mask_arr][order].astype(np.int64)
+        slots = (local_hours * 60 + minutes_sorted) // 15
+        epochs_sorted = epoch_ns[mask_arr][order]
     else:
         values = np.array([], dtype=float)
-        local_hours = np.array([], dtype=float)
-        slots = np.array([], dtype=int)
-        measured_sel_utc = pd.Series([], dtype="datetime64[ns, UTC]")
+        local_hours = np.array([], dtype=np.int64)
+        slots = np.array([], dtype=np.int64)
+        epochs_sorted = np.array([], dtype=np.int64)
 
     subj_key = subject if subject is not None else (
         clean["subject"].iloc[0] if len(clean) else "patient")
@@ -319,7 +330,7 @@ def compute_metrics(
     latest_ts = None
     fresh_state = None
     if values.size:
-        latest_dt = measured_sel_utc.iloc[-1].to_pydatetime()
+        latest_dt = pd.Timestamp(int(epochs_sorted[-1]), unit="ns", tz="UTC").to_pydatetime()
         fresh = integrity.freshness(latest_dt, now=evaluated_at)
         fresh_state = fresh.state
         latest_ts = fresh.measured_at.isoformat()

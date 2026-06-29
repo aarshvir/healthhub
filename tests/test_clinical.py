@@ -179,6 +179,13 @@ def test_out_of_range_reading_makes_metrics_invalid():
     assert _val(m, "mean_mgdl") is not None                 # value still computed from good rows
 
 
+def test_window_selects_subset():
+    # 10 readings at NOW, NOW-1m, ... NOW-9m; a 5-minute window keeps the 5 most recent
+    m = clinical.compute_metrics(_store(CORE), now=NOW,
+                                 window=(NOW - timedelta(minutes=4), NOW))
+    assert _val(m, "n_readings") == 5
+
+
 def test_expired_data_makes_metrics_invalid():
     old = NOW - timedelta(days=10)
     m = clinical.compute_metrics(_store(CORE, start=old), now=NOW)
