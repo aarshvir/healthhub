@@ -92,7 +92,7 @@ def _base(ts, idx):
             "tags": ["bearable"], "symptom": None, "supplements": None, "note": None,
             "calories_kcal": None, "net_carbs_g": None, "protein_g": None, "fat_g": None,
             "fiber_g": None, "mood_1to5": None, "energy_1to5": None, "symptom_sev_1to5": None,
-            "glucose_mgdl": None, "sleep_h": None, "key": f"bearable-{idx}"}
+            "glucose_mgdl": None, "sleep_h": None, "key": None}
 
 
 def parse_rows(rows: list[dict]) -> list[dict]:
@@ -122,6 +122,9 @@ def parse_rows(rows: list[dict]) -> list[dict]:
             rec["item"] = detail
         if category:
             rec["tags"].append(category)
+        # content-based key: stable across re-exports, distinct for distinct entries
+        detail_key = str(detail or rec.get("note") or "").strip().lower()[:24]
+        rec["key"] = f"bearable-{ts.isoformat()}-{category or 'note'}-{detail_key}"
         out.append(rec)
     return out
 
@@ -164,4 +167,17 @@ def self_check(records: list[dict]) -> list[str]:
             violations.append(f"sleep_h={r['sleep_h']} out of 0..24")
         if not r.get("measured_at"):
             violations.append("record missing measured_at")
+    violations += _key_collisions(records)
     return violations
+
+
+def _key_collisions(records: list[dict]) -> list[str]:
+    """Flag any key that maps to two DIFFERENT records (a real collision, not benign dedup)."""
+    seen, out = {}, []
+    for r in records:
+        k = r.get("key")
+        body = tuple(sorted((kk, str(vv)) for kk, vv in r.items() if kk != "key"))
+        if k in seen and seen[k] != body:
+            out.append(f"key collision (distinct records share key {k!r})")
+        seen[k] = body
+    return out

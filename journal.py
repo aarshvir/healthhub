@@ -78,7 +78,10 @@ def parse_rows(rows: list[dict]) -> list[dict]:
         }
         for f in NUMERIC_FIELDS:
             rec[f] = _num(raw.get(f))
-        rec["key"] = rec["entry_id"] or rec["measured_at"]
+        # entry_id is the natural key; fall back to a content-based key so two distinct
+        # entries at the same timestamp don't collide and overwrite each other
+        rec["key"] = rec["entry_id"] or (
+            f"{rec['measured_at']}|{rec.get('type')}|{str(rec.get('item') or '')[:24]}")
         out.append(rec)
     return out
 

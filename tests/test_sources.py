@@ -72,6 +72,33 @@ def test_healthifyme_meals_feed_food_impact(st):
     assert {m["item"] for m in meals} == {"Chilli Paneer", "Dal Rice"}
 
 
+def test_healthifyme_same_food_two_meals_not_dropped(st):
+    # same food twice in a day at different slots must NOT collide (idempotency #11)
+    csv = ("date,meal,food,carbs\n"
+           "2026-06-27,Breakfast,Rice,60\n"
+           "2026-06-27,Lunch,Rice,50\n")
+    recs = healthifyme.parse_csv(csv)
+    assert len({r["key"] for r in recs}) == 2          # distinct keys
+    assert healthifyme.self_check(recs) == []          # no collision flagged
+    with freeze_time(NOW):
+        healthifyme.ingest(st, healthifyme.CsvHealthifyMeSource(text=csv), now=NOW)
+    carbs = sorted(m["net_carbs_g"] for m in journal.meals(st))
+    assert carbs == [50, 60]                            # both meals kept
+
+
+def test_bearable_keys_stable_across_reexports(st):
+    a = bearable.parse_csv(BEARABLE_CSV)
+    b = bearable.parse_csv(BEARABLE_CSV)
+    assert [r["key"] for r in a] == [r["key"] for r in b]   # content-based, idempotent
+    assert len({r["key"] for r in a}) == len(a)             # distinct entries distinct keys
+    # re-ingesting the same export does not duplicate rows
+    with freeze_time(NOW):
+        bearable.ingest(st, bearable.CsvBearableSource(text=BEARABLE_CSV), now=NOW)
+        n1 = len(journal.records(st))
+        bearable.ingest(st, bearable.CsvBearableSource(text=BEARABLE_CSV), now=NOW)
+        assert len(journal.records(st)) == n1
+
+
 # ---- Oura --------------------------------------------------------------------------
 SLEEP_DOCS = [{"day": "2026-06-27", "light_sleep_duration": 86 * 60, "deep_sleep_duration": 56 * 60,
                "rem_sleep_duration": 60 * 60, "awake_time": 10 * 60, "average_heart_rate": 58}]
@@ -109,6 +136,20 @@ def test_oura_fetch_days_with_injected_session():
     with freeze_time(NOW):
         data = oura.fetch_days("tok", days=7, now=NOW, session=_FakeSession())
     assert "2026-06-27" in data["days"]
+
+
+def test_oura_two_sleep_periods_same_day_consolidated():
+    # a night + a nap on the same day -> ONE consolidated row, summed (no double-count)
+    docs = [{"day": "2026-06-27", "light_sleep_duration": 60 * 60, "deep_sleep_duration": 30 * 60,
+             "rem_sleep_duration": 20 * 60, "awake_time": 5 * 60, "average_heart_rate": 56},
+            {"day": "2026-06-27", "light_sleep_duration": 20 * 60, "deep_sleep_duration": 10 * 60,
+             "rem_sleep_duration": 0, "awake_time": 2 * 60, "average_heart_rate": 60}]
+    rows = oura.to_rows(docs, [])
+    with freeze_time(NOW):
+        data = wearables.parse(rows, now=NOW)
+    # (60+20) light + (30+10) deep + (20+0) rem = 140
+    assert data["days"]["2026-06-27"]["sleep_total_min"] == pytest.approx(140.0)
+    assert data["days"]["2026-06-27"]["hr_avg"] == pytest.approx(58.0)   # mean(56,60)
 
 
 # ---- config leak gate --------------------------------------------------------------

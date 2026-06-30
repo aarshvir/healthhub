@@ -182,11 +182,13 @@ def build_workbook(store, *, now=None, wearables=None, health=None, window_days:
                       ev.get("value"), ev.get("unit"), ev.get("ref_high")])
     lws = _sheet(wb, "Labs", ["timestamp", "marker", "value", "unit", "ref_high"], lrows,
                  number_formats={1: "yyyy-mm-dd hh:mm"})
-    if lrows:  # flag a value above its reference high (per-row formula CF)
+    # flag each value above ITS OWN reference high — per-row rule with an absolute $E$row
+    # reference so a row can never be compared against another row's ref_high.
+    red = PatternFill("solid", fgColor="F8696B")
+    for i in range(len(lrows)):
+        r = i + 2
         lws.conditional_formatting.add(
-            f"C2:C{len(lrows) + 1}",
-            CellIsRule(operator="greaterThan", formula=["E2"],
-                       fill=PatternFill("solid", fgColor="F8696B")))
+            f"C{r}", CellIsRule(operator="greaterThan", formula=[f"$E${r}"], fill=red))
 
     # ---- AGP_Profile ----
     arows = []

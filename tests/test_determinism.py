@@ -47,6 +47,22 @@ def test_trend_json_identical_on_repeat(tmp_path):
     assert (tmp_path / "a" / "trend.json").read_text() == (tmp_path / "b" / "trend.json").read_text()
 
 
+def test_same_store_recycled_metrics_byte_identical(tmp_path):
+    # running the cycle twice against the SAME (already-populated) store is byte-identical
+    with freeze_time(NOW):
+        integrity.cache_clear()
+        s = store_mod.Store(":memory:")
+        src = glucose.FixtureSource(_readings())
+        engine.run_cycle(store=s, glucose_source=src, now=NOW, window_days=7,
+                         walk_adherence=0.8, out_dir=str(tmp_path / "a"), analyses_path=None)
+        engine.run_cycle(store=s, glucose_source=src, now=NOW, window_days=7,
+                         walk_adherence=0.8, out_dir=str(tmp_path / "b"), analyses_path=None)
+        s.close()
+        integrity.cache_clear()
+    assert (tmp_path / "a" / "metrics.json").read_text() == \
+           (tmp_path / "b" / "metrics.json").read_text()
+
+
 def test_cycle_run_twice_does_not_duplicate_store_rows(tmp_path):
     with freeze_time(NOW):
         integrity.cache_clear()

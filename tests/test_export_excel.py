@@ -92,6 +92,29 @@ def test_labs_high_marker_flagged(st):
     assert list(wb["Labs"].conditional_formatting), "expected lab high-marker CF"
 
 
+def test_labs_cf_is_per_row_not_fixed_reference(st):
+    # 3 labs with DIFFERENT ref_high -> each row must compare to its OWN E cell ($E$row)
+    with freeze_time(NOW):
+        st.append_events("labs", [
+            {"key": "a", "measured_at": (NOW).isoformat(), "marker": "ALB", "value": 3.5,
+             "unit": "g/dL", "ref_high": 3.6},
+            {"key": "b", "measured_at": (NOW).isoformat(), "marker": "LDL", "value": 5.0,
+             "unit": "mmol/L", "ref_high": 4.0},
+        ], key_field="key", now=NOW)
+        wb = export_excel.build_workbook(st, now=NOW)
+    lws = wb["Labs"]
+    # collect (range, formula) pairs from the CF rules
+    refs = {}
+    for rng in lws.conditional_formatting:
+        for rule in lws.conditional_formatting[rng]:
+            refs[str(rng.sqref)] = rule.formula[0]
+    # each value cell references its own row's ref_high, never a single fixed cell
+    assert refs.get("C2") == "$E$2"
+    assert refs.get("C3") == "$E$3"
+    assert refs.get("C4") == "$E$4"
+    assert len(set(refs.values())) == len(refs)   # all distinct -> not a fixed reference
+
+
 def test_write_and_reload(st, tmp_path):
     with freeze_time(NOW):
         path = export_excel.write_excel(st, str(tmp_path / "HealthOS_500d.xlsx"), now=NOW)

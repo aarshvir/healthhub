@@ -80,7 +80,9 @@ def parse_rows(rows: list[dict]) -> list[dict]:
             "fat_g": _num(_ci(raw, "fat")), "fiber_g": _num(_ci(raw, "fiber", "fibre")),
             "mood_1to5": None, "energy_1to5": None, "symptom_sev_1to5": None,
             "glucose_mgdl": None, "sleep_h": None,
-            "key": f"hme-{ts.date().isoformat()}-{str(food or idx).strip().lower()[:24]}",
+            # full timestamp in the key so two distinct meals (e.g. breakfast vs lunch Rice)
+            # never collide and silently overwrite each other
+            "key": f"hme-{ts.isoformat()}-{str(food or idx).strip().lower()[:24]}",
         })
     return out
 
@@ -119,4 +121,10 @@ def self_check(records: list[dict]) -> list[str]:
             v = r.get(k)
             if v is not None and v < 0:
                 violations.append(f"{k}={v} negative")
+    seen = {}
+    for r in records:
+        k, body = r.get("key"), tuple(sorted((a, str(b)) for a, b in r.items() if a != "key"))
+        if k in seen and seen[k] != body:
+            violations.append(f"key collision (distinct meals share key {k!r})")
+        seen[k] = body
     return violations

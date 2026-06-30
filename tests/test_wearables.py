@@ -93,3 +93,39 @@ def test_build_from_fixture_source():
     with freeze_time(NOW):
         data = wearables.build(wearables.FixtureRows(_rows()), now=NOW)
     assert data["days"]["2026-06-27"]["steps"] == 5000.0
+
+
+_SLEEP_HDR = ["Date", "Source(s)", "Timezone", "Start Time", "End Time",
+              "Light Sleep (min)", "Deep Sleep (min)", "REM Sleep (min)", "Awake (min)"]
+
+
+def test_sleep_dedup_prefers_source_not_sum():
+    # two SOURCES on the same day must NOT be summed — preferred source (shealth) wins
+    rows = [_SLEEP_HDR,
+            ["2026-06-27", "android", "Asia/Dubai", "", "", "60", "20", "10", "5"],
+            ["2026-06-27", "com.sec.android.app.shealth", "Asia/Dubai", "", "",
+             "86", "56", "30", "5"]]
+    with freeze_time(NOW):
+        data = wearables.parse(rows, now=NOW)
+    day = data["days"]["2026-06-27"]
+    assert day["sleep_total_min"] == 172.0          # 86+56+30 (shealth), NOT 265
+    assert day["sleep_source"] == "com.sec.android.app.shealth"
+
+
+def test_sleep_periods_within_one_source_are_summed():
+    # a nap + night sleep from the SAME source on one day DO sum
+    rows = [_SLEEP_HDR,
+            ["2026-06-27", "com.sec.android.app.shealth", "Asia/Dubai", "", "",
+             "86", "56", "30", "5"],
+            ["2026-06-27", "com.sec.android.app.shealth", "Asia/Dubai", "", "",
+             "40", "10", "0", "10"]]
+    with freeze_time(NOW):
+        data = wearables.parse(rows, now=NOW)
+    assert data["days"]["2026-06-27"]["sleep_total_min"] == 222.0   # (86+40)+(56+10)+(30+0)
+
+
+def test_parse_is_idempotent_on_repeat():
+    with freeze_time(NOW):
+        a = wearables.parse(_rows(), now=NOW)["days"]
+        b = wearables.parse(_rows(), now=NOW)["days"]
+    assert a == b  # re-parsing the same export never doubles values

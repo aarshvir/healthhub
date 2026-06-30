@@ -107,8 +107,11 @@ def parse(rows: list[list[str]], *, now=None) -> dict:
             return None
         return days.setdefault(d, {"date": d})
 
-    # Activity needs source-preference dedup; collect candidates then pick best per day.
+    # Activity AND sleep need source-preference dedup; collect candidates then pick best per day.
+    # (Multiple sleep *periods* from the SAME source on one day are summed; different SOURCES
+    # on the same day are NOT summed — the preferred source wins, like Activity.)
     activity_candidates: dict[str, list[tuple[int, dict]]] = {}
+    sleep_candidates: dict[str, dict[str, dict]] = {}
 
     for kind, header, body in split_tables(rows):
         for raw in body:
@@ -134,16 +137,13 @@ def parse(rows: list[list[str]], *, now=None) -> dict:
             elif kind == "hydration":
                 slot["hydration_ml"] = _num(rec.get("Hydration (ml)"))
             elif kind == "sleep":
-                light = _num(rec.get("Light Sleep (min)")) or 0
-                deep = _num(rec.get("Deep Sleep (min)")) or 0
-                rem = _num(rec.get("REM Sleep (min)")) or 0
-                awake = _num(rec.get("Awake (min)")) or 0
-                slot["sleep_light_min"] = slot.get("sleep_light_min", 0) + light
-                slot["sleep_deep_min"] = slot.get("sleep_deep_min", 0) + deep
-                slot["sleep_rem_min"] = slot.get("sleep_rem_min", 0) + rem
-                slot["sleep_awake_min"] = slot.get("sleep_awake_min", 0) + awake
-                slot["sleep_total_min"] = (slot.get("sleep_total_min", 0)
-                                           + light + deep + rem)
+                src = rec.get("Source(s)")
+                agg = sleep_candidates.setdefault(d, {}).setdefault(
+                    src, {"light": 0.0, "deep": 0.0, "rem": 0.0, "awake": 0.0})
+                agg["light"] += _num(rec.get("Light Sleep (min)")) or 0
+                agg["deep"] += _num(rec.get("Deep Sleep (min)")) or 0
+                agg["rem"] += _num(rec.get("REM Sleep (min)")) or 0
+                agg["awake"] += _num(rec.get("Awake (min)")) or 0
             elif kind == "vitals":
                 slot["hr_min"] = _num(rec.get("Heart rate min (bpm)"))
                 slot["hr_max"] = _num(rec.get("Heart rate max (bpm)"))
@@ -157,6 +157,17 @@ def parse(rows: list[list[str]], *, now=None) -> dict:
         days[d]["total_calories"] = _num(best.get("Total Calories (kcal)"))
         days[d]["active_calories"] = _num(best.get("Active Calories (kcal)"))
         days[d]["activity_source"] = best.get("Source(s)")
+
+    # sleep: pick the single preferred source per day (periods within it already summed)
+    for d, by_src in sleep_candidates.items():
+        best_src = min(by_src.keys(), key=_source_rank)
+        a = by_src[best_src]
+        days[d]["sleep_light_min"] = a["light"]
+        days[d]["sleep_deep_min"] = a["deep"]
+        days[d]["sleep_rem_min"] = a["rem"]
+        days[d]["sleep_awake_min"] = a["awake"]
+        days[d]["sleep_total_min"] = a["light"] + a["deep"] + a["rem"]
+        days[d]["sleep_source"] = best_src
 
     return {
         "generated_at": now.isoformat(),
@@ -179,7 +190,7 @@ class FixtureRows:
     def __init__(self, rows):
         self._rows = rows
 
-    def read_values(self):
+    def read_values(self, *, now=None):
         return self._rows
 
 
@@ -193,7 +204,7 @@ class GSheetWearablesSource:
         self.sheet_id, self.worksheet = sheet_id, worksheet
         self.service_account_path = service_account_path
 
-    def read_values(self):
+    def read_values(self, *, now=None):
         import gspread  # lazy
 
         gc = (gspread.service_account(filename=self.service_account_path)
@@ -204,7 +215,7 @@ class GSheetWearablesSource:
 
 
 def build(source, *, now=None) -> dict:
-    return parse(source.read_values(), now=now)
+    return parse(source.read_values(now=now), now=now)
 
 
 def write_wearables(data: dict, path: str = "wearables.json") -> str:

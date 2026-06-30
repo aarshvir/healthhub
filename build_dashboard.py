@@ -155,11 +155,15 @@ def _analytics_tab(c) -> str:
     buttons = "".join(
         f'<button class="winbtn" onclick="showWindow({w})" id="winbtn-{w}">{w}d</button>'
         for w in windows)
+    # provenance + freshness on analytics tiles too: the recency of the underlying glucose
+    gstate = ((c.get("header") or {}).get("glucose") or {}).get("state")
+    fresh_badge = _freshness_badge(gstate) if gstate else ""
     panels = []
     for i, w in enumerate(windows):
         tr = c["trend_by_window"][w] if w in c["trend_by_window"] else c["trend_by_window"][str(w)]
         s = tr.get("summary", {})
-        summary = "".join(_tile(k, _fmt(s.get(k)), source="analytics")
+        summary = "".join(_tile(k, _fmt(s.get(k)), source="analytics", freshness=fresh_badge,
+                                sub=f"{w}d window")
                           for k in ("mean_mgdl", "tir_pct", "titr_pct", "cv_pct", "gri")
                           if k in s)
         style = "" if i == 0 else ' style="display:none"'
