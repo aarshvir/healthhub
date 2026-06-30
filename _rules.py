@@ -27,7 +27,7 @@ RANGE_LIMITS: dict[str, tuple[float, float, str, int]] = {
     "spo2":             (50.0, 100.0, "%",     0),
     "temperature_c":    (25.0,  45.0, "C",     1),
     "respiratory_rate": ( 4.0,  80.0, "1/min", 0),
-    "glucose_mgdl":     (20.0, 800.0, "mg/dL", 0),
+    "glucose_mgdl":     (20.0, 600.0, "mg/dL", 0),
     "weight_kg":        ( 1.0, 500.0, "kg",    1),
 }
 

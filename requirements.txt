@@ -6,6 +6,8 @@ numpy==2.4.6
 pandas==3.0.4
 python-dateutil==2.9.0.post0
 six==1.16.0                  # transitive: required by python-dateutil
+openpyxl==3.1.5              # 500-day Excel export
+et-xmlfile==2.0.0            # transitive: required by openpyxl
 
 # ---- test / dev ----
 pytest==9.1.1

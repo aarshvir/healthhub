@@ -2,7 +2,21 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .hypothesis/
-# generated analytics artifact (produced by clinical.write_metrics)
+# generated analytics artifacts
 /metrics.json
+/trend.json
+/wearables.json
+/dashboard.html
+# user-authored saved-analysis registry (personal)
+/analyses.json
+# secrets — never commit
+.env
+*.secret.json
+service-account*.json
+/publish/
+# build artifacts
+build/
+dist/
+*.egg-info/
 .venv/
 venv/

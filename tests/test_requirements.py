@@ -10,6 +10,8 @@ EXPECTED_PINS = {
     "pandas": "3.0.4",
     "python-dateutil": "2.9.0.post0",
     "six": "1.16.0",
+    "openpyxl": "3.1.5",
+    "et-xmlfile": "2.0.0",
     "pytest": "9.1.1",
     "hypothesis": "6.155.7",
     "freezegun": "1.5.5",

@@ -377,9 +377,13 @@ def validate_readings(
                 seen.add(key)
 
     keep = [pos for pos in range(n_in) if pos not in reject]
-    clean = work.iloc[keep].copy()
+    # Rebuild the clean frame column-by-column from numpy slices rather than a positional
+    # DataFrame take (`work.iloc[keep]`). pandas' datetimelike take / maybe_promote — used by
+    # .iloc[list], boolean masks and .take — can segfault on some pandas/numpy/CPython
+    # combinations (notably pandas 3.0 wheels on CPython 3.12) whenever a tz-aware datetime
+    # column is present. `to_numpy()[keep]` sidesteps that path and yields a fresh 0..k-1 index.
+    clean = pd.DataFrame({col: work[col].to_numpy()[keep] for col in work.columns})
     clean["value"] = pd.to_numeric(clean["value"], errors="coerce").astype("float64")
-    clean = clean.reset_index(drop=True)
     clean.attrs["_integrity_validated"] = _PROCESS_TOKEN
 
     report = ValidationReport(
