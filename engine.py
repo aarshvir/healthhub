@@ -22,6 +22,7 @@ import custom as custom_mod
 import experiments as experiments_mod
 import food_impact
 import glucose as glucose_mod
+import heartbeat as heartbeat_mod
 import insights as insights_mod
 import integrity
 import journal
@@ -44,6 +45,7 @@ class CycleResult:
     food_ranking: list = dataclasses.field(default_factory=list)
     experiments: list = dataclasses.field(default_factory=list)
     custom_cards: list = dataclasses.field(default_factory=list)
+    heartbeat: dict = dataclasses.field(default_factory=dict)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -78,7 +80,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
               walk_adherence: float | None = None, out_dir: str = ".",
               prune_retention: int = 500, dashboard: bool = False,
               dashboard_windows=analytics.STANDARD_WINDOWS,
-              analyses_path: str | None = "analyses.json", sleep=None) -> CycleResult:
+              analyses_path: str | None = "analyses.json", alerter=None,
+              sleep=None) -> CycleResult:
     """Run a full cycle against *store* and write the artifacts to *out_dir*.
 
     Always: pull glucose -> prune -> §B metrics -> trend -> self-checks -> metrics.json + trend.json.
@@ -128,12 +131,32 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         artifacts["metrics"] = os.path.join(out_dir, "metrics.json")
         artifacts["trend"] = os.path.join(out_dir, "trend.json")
 
+    wears = None
     if wearables_source is not None:
         wears = wearables_mod.build(wearables_source, now=now)
         violations += wearables_mod.self_check(wears, now=now)
         if out_dir:
             artifacts["wearables"] = wearables_mod.write_wearables(
                 wears, os.path.join(out_dir, "wearables.json"))
+
+    # pipeline heartbeat: last successful datum per source -> liveness + alerts (§A rule 6)
+    last_success = {}
+    latest_g = store.latest_glucose()
+    if latest_g:
+        last_success["glucose"] = latest_g["ts"]
+    for stream in ("log", "labs", "supplement"):
+        evs = store.events(stream)
+        if evs:
+            last_success[stream] = max(e["ts"] for e in evs)
+    if wears and wears.get("days"):
+        last_success["wearables"] = max(wears["days"].keys()) + "T12:00:00+04:00"
+    health = heartbeat_mod.check(
+        last_success, now=now,
+        alerter=alerter if alerter is not None else heartbeat_mod.default_alerter(),
+        health_path=os.path.join(out_dir, "health.json") if out_dir else None)
+    violations += heartbeat_mod.self_check(health)
+    if out_dir:
+        artifacts["health"] = os.path.join(out_dir, "health.json")
 
     quarantined = store.quarantined()
     if dashboard:
@@ -144,7 +167,7 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             latest_glucose=store.latest_glucose(), food_ranking=food_ranking,
             experiments=experiment_results, assessment=assessment,
             insights_text=insights_text, quarantine=quarantined,
-            custom_cards=custom_cards, now=now)
+            custom_cards=custom_cards, heartbeat=health, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
@@ -155,5 +178,5 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         metrics=metrics, trend=trend, quarantined=quarantined,
         self_check_violations=violations, assessment=assessment, insights_text=insights_text,
         food_ranking=food_ranking, experiments=experiment_results,
-        custom_cards=custom_cards, artifacts=artifacts,
+        custom_cards=custom_cards, heartbeat=health, artifacts=artifacts,
     )

@@ -131,6 +131,27 @@ def test_full_cycle_writes_all_artifacts(env):
     assert isinstance(result.insights_text, str)
 
 
+def test_heartbeat_flags_stale_feed_and_alerts(env):
+    import heartbeat
+    st, out = env
+    # a "killed" glucose feed: last reading 2h ago (CGM threshold is 30m)
+    stale = [{"measured_at": NOW - timedelta(hours=2, minutes=i), "glucose_mgdl": v}
+             for i, v in enumerate(CORE)]
+    alerter = heartbeat.NoopAlerter()
+    result = engine.run_cycle(store=st, glucose_source=glucose.FixtureSource(stale),
+                              now=NOW, window_days=7, dashboard=True, alerter=alerter,
+                              out_dir=str(out))
+    g = next(s for s in result.heartbeat["sources"] if s["source"] == "glucose")
+    assert g["stale"] is True and g["state"] in ("stale", "down")
+    assert "glucose" in (result.heartbeat.get("alerted") or [])
+    assert any("glucose" in subj for subj, _ in alerter.sent)        # alert fired
+    assert (out / "health.json").exists()                            # health endpoint written
+    html = (out / "dashboard.html").read_text()
+    assert "feed(s) stale" in html                                   # dashboard flags it
+    # the underlying metrics are still computed correctly from the (valid) readings
+    assert result.metrics["mean_mgdl"]["value"] == pytest.approx(150.0)
+
+
 def test_cycle_runs_without_source_on_prepopulated_store(env):
     st, out = env
     glucose.sync(st, glucose.FixtureSource(_core_readings()), now=NOW)

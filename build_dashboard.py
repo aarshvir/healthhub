@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import timedelta
 
 import integrity
 
 TABS = ("Today", "Analytics", "Food", "Experiments", "Custom", "Protocol", "Export")
+# CGM is true-5-min: judge the header glucose value on CGM timescales, not the generic 6h
+# validity window — a 2h-old CGM reading must not render as "live" (§A rule 6).
+CGM_FRESH = timedelta(minutes=30)
+CGM_STALE = timedelta(minutes=90)
 _RANGE_LOW, _RANGE_HIGH = 70.0, 180.0
 _Y_MIN, _Y_MAX = 40.0, 300.0
 
@@ -92,12 +97,14 @@ def _agp_svg(agp: list, *, width=720, height=240) -> str:
 
 def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=None,
                   food_ranking=None, experiments=None, assessment=None,
-                  insights_text="", quarantine=None, custom_cards=None, now=None) -> dict:
+                  insights_text="", quarantine=None, custom_cards=None,
+                  heartbeat=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
     if latest_glucose and latest_glucose.get("ts") is not None:
-        fr = integrity.freshness(latest_glucose["ts"], now=now)
+        fr = integrity.freshness(latest_glucose["ts"], now=now,
+                                 fresh_within=CGM_FRESH, stale_within=CGM_STALE)
         header["glucose"] = {
             "value": latest_glucose.get("value"),
             "as_of": fr.measured_at.isoformat(),
@@ -109,7 +116,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "wearables": wearables or {}, "food_ranking": food_ranking or [],
         "experiments": experiments or [], "assessment": assessment or {},
         "insights_text": insights_text or "", "quarantine": quarantine or [],
-        "custom_cards": custom_cards or [],
+        "custom_cards": custom_cards or [], "heartbeat": heartbeat or {},
     }
 
 
@@ -257,6 +264,11 @@ padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#256
 .bar-lbl{flex:0 0 120px;color:#cbd5e1}.bar{flex:1;background:#0b1220;border-radius:6px;height:12px;overflow:hidden}
 .bar i{display:block;height:100%;background:#3b82f6}.bar-val{flex:0 0 48px;text-align:right;color:#e2e8f0}
 .card-assess{font-size:12px;color:#a5b4fc;margin-top:8px}
+.heartbeat{margin-top:8px;font-size:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.heartbeat.hb-bad{color:#f59e0b}.heartbeat.hb-ok{color:#34d399}
+.hb{background:#1f2937;border-radius:10px;padding:2px 8px;color:#cbd5e1}
+.hb-fresh{border:1px solid #1f8a4c}.hb-stale{border:1px solid #f59e0b;color:#fbbf24}
+.hb-down,.hb-no_data,.hb-future{border:1px solid #ef4444;color:#fca5a5}
 """
 
 _JS = """
@@ -294,10 +306,19 @@ def render(cockpit: dict) -> str:
                f'<div class="hdr-age">as of <span id="hdrAsOf">{_esc(g.get("as_of"))}</span> '
                f'(<span id="hdrAge">{_esc(g.get("age"))}</span> ago) — '
                f'last-known-good, not live</div>')
-        cfg = json.dumps({"asOf": g.get("as_of"), "freshH": 6, "staleH": 72})
+        cfg = json.dumps({"asOf": g.get("as_of"), "freshH": 0.5, "staleH": 1.5})
     else:
         hdr = '<div class="hdr-glucose">No glucose data</div>'
         cfg = "null"
+
+    hb = cockpit.get("heartbeat") or {}
+    pills = "".join(
+        f'<span class="hb hb-{_esc(s["state"])}">{_esc(s["source"])}: '
+        f'{_esc(s["age"] or "no data")} · {_esc(s["state"])}</span>'
+        for s in hb.get("sources", []))
+    banner = (f'<div class="heartbeat {"hb-ok" if hb.get("overall_ok") else "hb-bad"}">'
+              f'{"✓ all feeds live" if hb.get("overall_ok") else "⚠ feed(s) stale"} {pills}</div>'
+              if hb.get("sources") else "")
 
     bodies = {
         "Today": _today_tab(cockpit), "Analytics": _analytics_tab(cockpit),
@@ -313,7 +334,7 @@ def render(cockpit: dict) -> str:
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<link rel="manifest" href="manifest.json">'
             f'<title>HealthHub</title><style>{_CSS}</style></head><body>'
-            f'<header>{hdr}</header><nav>{nav}</nav><main>{tabs}</main>'
+            f'<header>{hdr}{banner}</header><nav>{nav}</nav><main>{tabs}</main>'
             f'<script>window.HH={cfg};{_JS}{_FRESH_JS}</script></body></html>')
 
 
