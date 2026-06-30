@@ -234,8 +234,10 @@ def _export_tab(c) -> str:
     q = c["quarantine"]
     qnote = (f'<p class="warn">{len(q)} row(s) quarantined and excluded from all charts.</p>'
              if q else "<p>No quarantined rows.</p>")
-    return (qnote + '<p>Download artifacts: <code>metrics.json</code>, <code>trend.json</code>, '
-            '<code>wearables.json</code>.</p>'
+    return (qnote
+            + '<p><a class="xbtn" href="HealthOS_500d.xlsx" download>⬇ Export 500-day Excel</a></p>'
+            + '<p>Artifacts (same store as the dashboard): <code>metrics.json</code>, '
+            '<code>trend.json</code>, <code>wearables.json</code>, <code>health.json</code>.</p>'
             f'<details><summary>cockpit JSON</summary><pre>{_esc(json.dumps(c["header"], indent=2))}'
             '</pre></details>')
 
@@ -269,6 +271,7 @@ padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#256
 .hb{background:#1f2937;border-radius:10px;padding:2px 8px;color:#cbd5e1}
 .hb-fresh{border:1px solid #1f8a4c}.hb-stale{border:1px solid #f59e0b;color:#fbbf24}
 .hb-down,.hb-no_data,.hb-future{border:1px solid #ef4444;color:#fca5a5}
+.xbtn{display:inline-block;background:#2563eb;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700}
 """
 
 _JS = """

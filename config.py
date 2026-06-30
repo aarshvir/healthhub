@@ -21,7 +21,7 @@ import os
 # (regions, model names, sheet ids, hostnames) are intentionally excluded.
 SECRET_KEYS = (
     "DEXCOM_PASSWORD", "NS_TOKEN", "NS_API_SECRET", "GOOGLE_SA_JSON",
-    "ANTHROPIC_API_KEY", "TELEGRAM_TOKEN", "SMTP_PASSWORD",
+    "ANTHROPIC_API_KEY", "TELEGRAM_TOKEN", "SMTP_PASSWORD", "OURA_TOKEN",
 )
 DEFAULTS = {"DEXCOM_REGION": "ous", "MODEL_FAST": "claude-haiku-4-5",
             "MODEL_DEEP": "claude-opus-4-8"}
@@ -59,6 +59,36 @@ def email_configured() -> bool:
     return is_set("SMTP_HOST") and is_set("ALERT_EMAIL_TO")
 
 
+def oura_configured() -> bool:
+    return is_set("OURA_TOKEN")
+
+
+def google_sa_path() -> str | None:
+    """Path to the Google service-account JSON. Inline JSON is materialized to a 0600 temp file."""
+    val = os.environ.get("GOOGLE_SA_JSON")
+    if not val:
+        return None
+    if val.lstrip().startswith("{"):
+        import json
+        import tempfile
+        json.loads(val)  # validate
+        path = os.path.join(tempfile.gettempdir(), "healthhub-sa.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(val)
+        os.chmod(path, 0o600)
+        return path
+    return val
+
+
+def presence_report() -> dict:
+    """Which integrations are wired (booleans only — no values). demo_mode = no live glucose."""
+    dex, ns = dexcom_configured(), nightscout_configured()
+    return {"dexcom": dex, "nightscout": ns, "sheets": sheets_configured(),
+            "telegram": telegram_configured(), "email": email_configured(),
+            "anthropic": is_set("ANTHROPIC_API_KEY"), "oura": oura_configured(),
+            "demo_mode": not (dex or ns)}
+
+
 # ---- secret hygiene ----------------------------------------------------------------
 def secret_values() -> list[str]:
     """Every currently-set secret value (longer than a trivial length) for leak scanning."""
@@ -85,3 +115,15 @@ def assert_no_secrets(text: str, *, where: str = "output") -> str:
     if leaked:
         raise RuntimeError(f"secret(s) {leaked} would leak into {where}; aborting publish")
     return text
+
+
+def scan_paths(paths, *, where: str = "publish") -> list:
+    """Leak gate: read each existing file and abort if any secret value appears (§A)."""
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError):
+            continue
+        assert_no_secrets(text, where=f"{where}:{path}")
+    return list(paths)

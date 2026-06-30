@@ -22,6 +22,7 @@ dependencies = [
     "numpy>=2.4,<3",
     "pandas>=3,<4",
     "python-dateutil>=2.9,<3",
+    "openpyxl>=3.1,<4",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +35,8 @@ dev = [
 
 [project.scripts]
 healthhub-metrics = "cli:main"
+healthhub-cycle = "cycle:main"
+healthhub-export = "export_excel:main"
 
 [project.urls]
 Repository = "https://github.com/aarshvir/healthhub"
@@ -46,6 +49,8 @@ py-modules = [
     "store", "glucose", "analytics", "engine", "journal", "statutil",
     "food_impact", "experiments", "symptoms", "mood_energy", "wearables",
     "assess", "insights", "custom", "build_dashboard",
+    "config", "heartbeat", "export_excel", "cycle",
+    "bearable", "healthifyme", "oura",
 ]
 
 [tool.pytest.ini_options]

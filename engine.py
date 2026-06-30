@@ -20,6 +20,7 @@ import build_dashboard
 import clinical
 import custom as custom_mod
 import experiments as experiments_mod
+import export_excel
 import food_impact
 import glucose as glucose_mod
 import heartbeat as heartbeat_mod
@@ -78,7 +79,7 @@ def _write_json(obj, path: str) -> None:
 def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=None,
               now=None, window_days: int = 14, subject: str = "patient",
               walk_adherence: float | None = None, out_dir: str = ".",
-              prune_retention: int = 500, dashboard: bool = False,
+              prune_retention: int = 500, dashboard: bool = False, excel: bool = False,
               dashboard_windows=analytics.STANDARD_WINDOWS,
               analyses_path: str | None = "analyses.json", alerter=None,
               sleep=None) -> CycleResult:
@@ -172,6 +173,16 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
                 build_dashboard.render(cockpit), os.path.join(out_dir, "dashboard.html"))
+
+    # the 500-day Excel workbook, from the SAME store (§D rule 7) — co-published so the
+    # dashboard's Export button resolves to a matching file
+    if excel and out_dir:
+        wb = export_excel.build_workbook(store, now=now, wearables=wears, health=health,
+                                         window_days=500)
+        violations += export_excel.self_check(store, wb)
+        excel_path = os.path.join(out_dir, "HealthOS_500d.xlsx")
+        wb.save(excel_path)
+        artifacts["excel"] = excel_path
 
     return CycleResult(
         generated_at=now.isoformat(), n_stored=n_stored, n_quarantined=len(quarantined),
