@@ -9,6 +9,11 @@ __pycache__/
 /dashboard.html
 # user-authored saved-analysis registry (personal)
 /analyses.json
+# secrets — never commit
+.env
+*.secret.json
+service-account*.json
+/publish/
 # build artifacts
 build/
 dist/
