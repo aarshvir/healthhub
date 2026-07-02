@@ -229,7 +229,10 @@ class GSheetLabsSource:
         try:
             ws = sh.worksheet(self.worksheet)
         except gspread.WorksheetNotFound:
-            return []   # labs tab not created yet — the heartbeat will show labs as missing
+            # dedicated labs spreadsheet whose tab isn't named 'labs' — use the first tab.
+            # Safe even if pointed at the wrong sheet: parse_rows only accepts rows that
+            # actually have date+marker+value columns, so anything else yields [].
+            ws = sh.sheet1
         return parse_rows(ws.get_all_records())
 
 
