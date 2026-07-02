@@ -18,7 +18,9 @@ import analytics
 import assess as assess_mod
 import build_dashboard
 import clinical
+import correlate as correlate_mod
 import custom as custom_mod
+import daily as daily_mod
 import experiments as experiments_mod
 import export_excel
 import food_impact
@@ -47,6 +49,9 @@ class CycleResult:
     experiments: list = dataclasses.field(default_factory=list)
     custom_cards: list = dataclasses.field(default_factory=list)
     heartbeat: dict = dataclasses.field(default_factory=dict)
+    correlation: dict = dataclasses.field(default_factory=dict)
+    daily_frame: list = dataclasses.field(default_factory=list)
+    review_text: str = ""
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -159,16 +164,28 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
     if out_dir:
         artifacts["health"] = os.path.join(out_dir, "health.json")
 
+    # unified per-day frame (all streams) + cross-stream correlation intelligence.
+    # widen to >=90 days so associations have enough overlapping days to be meaningful.
+    corr_window = max(90, window_days)
+    daily_frame = daily_mod.build(store, window_days=corr_window, now=now, wearables=wears)
+    correlation = correlate_mod.analyze(daily_frame)
+    review_text = correlate_mod.narrate(correlation["findings"], redact=True)
+    violations += daily_mod.self_check(daily_frame) + correlate_mod.self_check(correlation)
+    if out_dir:
+        _write_json(correlation, os.path.join(out_dir, "correlation.json"))
+        artifacts["correlation"] = os.path.join(out_dir, "correlation.json")
+
     quarantined = store.quarantined()
     if dashboard:
         trend_by_window = {int(w): analytics.compute(store, window_days=int(w), now=now)
                            for w in dashboard_windows}
         cockpit = build_dashboard.build_cockpit(
             metrics=metrics, trend_by_window=trend_by_window,
-            latest_glucose=store.latest_glucose(), food_ranking=food_ranking,
+            latest_glucose=store.latest_glucose(), wearables=wears, food_ranking=food_ranking,
             experiments=experiment_results, assessment=assessment,
             insights_text=insights_text, quarantine=quarantined,
-            custom_cards=custom_cards, heartbeat=health, now=now)
+            custom_cards=custom_cards, heartbeat=health,
+            daily_frame=daily_frame, correlation=correlation, review_text=review_text, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
@@ -189,5 +206,6 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         metrics=metrics, trend=trend, quarantined=quarantined,
         self_check_violations=violations, assessment=assessment, insights_text=insights_text,
         food_ranking=food_ranking, experiments=experiment_results,
-        custom_cards=custom_cards, heartbeat=health, artifacts=artifacts,
+        custom_cards=custom_cards, heartbeat=health, correlation=correlation,
+        daily_frame=daily_frame, review_text=review_text, artifacts=artifacts,
     )

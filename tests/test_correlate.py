@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from freezegun import freeze_time
 
+import build_dashboard
 import correlate
 import daily
 import integrity
@@ -166,3 +167,38 @@ def test_empty_frame_is_safe():
     assert res["findings"] == [] and res["n_days"] == 0
     assert correlate.self_check(res) == []
     assert "keep logging" in correlate.narrate(res["findings"]).lower()
+
+
+# ---- dashboard intelligence tabs ---------------------------------------------------------
+def test_dashboard_renders_intelligence_tabs(st, wear):
+    with freeze_time(NOW):
+        frame = daily.build(st, window_days=30, now=NOW, wearables=wear)
+        res = correlate.analyze(frame)
+        cockpit = build_dashboard.build_cockpit(
+            metrics={}, trend_by_window={}, daily_frame=frame, correlation=res,
+            review_text=correlate.narrate(res["findings"], redact=True),
+            assessment={"grade": "B", "score_pct": 80, "headline": "Solid control", "lines": []},
+            now=NOW)
+        html = build_dashboard.render(cockpit)
+    # every tab (including the new intelligence tabs) is in the nav
+    for tab in build_dashboard.TABS:
+        assert f">{tab}<" in html
+    # Trends: multi-stream sparklines with direct labels
+    assert 'class="spark"' in html and "Mean glucose" in html
+    # Correlations: non-causal framing + heatmap + at least one ranked association card
+    assert "observational" in html.lower()
+    assert "heatmap" in html and "corr-card" in html
+    # a real cross-stream association is surfaced (carbs <-> glucose)
+    assert any(f["cross_stream"] and f["r"] >= 0.9 for f in res["findings"])
+    # Review: coverage map of everything tracked + a grade
+    assert "Everything you" in html and "hero-grade" in html
+    assert build_dashboard.self_check(cockpit) == []
+
+
+def test_dashboard_backward_compatible_without_intelligence():
+    # old-style call (no daily_frame/correlation) must still render every tab gracefully
+    cockpit = build_dashboard.build_cockpit(metrics={}, trend_by_window={}, latest_glucose=None)
+    html = build_dashboard.render(cockpit)
+    for tab in build_dashboard.TABS:
+        assert f">{tab}<" in html
+    assert build_dashboard.self_check(cockpit) == []
