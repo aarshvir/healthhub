@@ -26,13 +26,20 @@ DEMO_GLUCOSE_CSV = os.path.join(os.path.dirname(__file__), "examples", "glucose_
 
 
 def build_glucose_source(*, now=None):
-    """Nightscout > Dexcom > demo fixture. Returns (source, mode)."""
+    """Nightscout > Dexcom > journal-sheet CGM checks > demo fixture. Returns (source, mode).
+
+    When a real journal sheet is configured, we NEVER fall back to the demo fixture — the
+    engine's journal-glucose bridge turns the sheet's logged CGM checks into real (sparse)
+    readings, and demo data must not mix with real data.
+    """
     if config.nightscout_configured():
         return glucose_mod.NightscoutSource(config.get("NS_URL"), token=config.get("NS_TOKEN")), "nightscout"
     if config.dexcom_configured():
         return (glucose_mod.PydexcomSource(config.get("DEXCOM_USERNAME"),
                                            config.get("DEXCOM_PASSWORD"),
                                            region=config.get("DEXCOM_REGION", "ous")), "dexcom")
+    if config.sheets_configured() and config.is_set("HEALTH_LOG_SHEET_ID"):
+        return None, "journal-sheet"   # glucose arrives via the engine's journal bridge
     if os.path.exists(DEMO_GLUCOSE_CSV):
         import pandas as pd
         df = pd.read_csv(DEMO_GLUCOSE_CSV)

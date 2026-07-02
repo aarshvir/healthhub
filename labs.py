@@ -225,7 +225,11 @@ class GSheetLabsSource:
         import gspread  # lazy: only needed for live reads
         gc = (gspread.service_account(filename=self.service_account_path)
               if self.service_account_path else gspread.service_account())
-        ws = gc.open_by_key(self.sheet_id).worksheet(self.worksheet)
+        sh = gc.open_by_key(self.sheet_id)
+        try:
+            ws = sh.worksheet(self.worksheet)
+        except gspread.WorksheetNotFound:
+            return []   # labs tab not created yet — the heartbeat will show labs as missing
         return parse_rows(ws.get_all_records())
 
 

@@ -13,6 +13,7 @@ import json
 import os
 
 import numpy as np
+import pandas as pd
 
 import analytics
 import assess as assess_mod
@@ -108,6 +109,14 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
                                     sleep=sleep).n_stored
     if log_source is not None:
         journal.ingest(store, log_source, now=now)
+        # journal-glucose bridge: CGM checks logged in the journal (glucose_mgdl column) are
+        # real readings — merge them into the glucose store (idempotent; store dedups by ts).
+        # Sparse but real: keeps the dashboard on YOUR data even before a 5-min feed is wired.
+        g_rows = [{"measured_at": r["measured_at"], "glucose_mgdl": r["glucose_mgdl"]}
+                  for r in journal.records(store) if r.get("glucose_mgdl") is not None]
+        if g_rows:
+            n_stored += store.append_glucose(pd.DataFrame(g_rows), source="journal-cgm-check",
+                                             subject=subject, now=now).n_stored
     if labs_source is not None:
         labs_mod.ingest(store, labs_source, now=now)
     store.prune(now=now, retention_days=prune_retention)

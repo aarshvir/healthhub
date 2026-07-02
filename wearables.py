@@ -195,7 +195,14 @@ class FixtureRows:
 
 
 class GSheetWearablesSource:
-    """Read the Health Connect export sheet via gspread (lazy)."""
+    """Read the Health Connect export sheet via gspread (lazy).
+
+    The Health Data Export app writes SEPARATE TABS (Activity / Body / Sleep / Vitals /
+    Nutrition…). ``parse`` already understands multiple header-led sections separated by blank
+    rows, so by default we read EVERY worksheet and concatenate them with blank separators —
+    reading only ``sheet1`` would silently drop sleep, HR, SpO₂ and weight. Pass ``worksheet=``
+    to pin a single tab instead.
+    """
 
     name = "gsheet-wearables"
 
@@ -210,8 +217,17 @@ class GSheetWearablesSource:
         gc = (gspread.service_account(filename=self.service_account_path)
               if self.service_account_path else gspread.service_account())
         sh = gc.open_by_key(self.sheet_id)
-        ws = sh.worksheet(self.worksheet) if self.worksheet else sh.sheet1
-        return ws.get_all_values()
+        if self.worksheet:
+            return sh.worksheet(self.worksheet).get_all_values()
+        rows: list[list] = []
+        for ws in sh.worksheets():
+            vals = ws.get_all_values()
+            if not vals:
+                continue
+            if rows:
+                rows.append([])   # blank separator between tabs (section boundary for parse)
+            rows.extend(vals)
+        return rows
 
 
 def build(source, *, now=None) -> dict:
