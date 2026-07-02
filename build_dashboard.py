@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 
 import correlate
 import daily
@@ -30,7 +30,7 @@ TABS = ("Today", "Reversal", "Trends", "Correlations", "Analytics", "Food", "Exp
         "Custom", "Review", "Export")
 # reserved status palette (dataviz): state colours, never reused for a data series
 STATUS_COLORS = {"good": "#0ca30c", "warning": "#fab219", "critical": "#d03b3b",
-                 "unknown": "#64748b"}
+                 "unknown": "#8091a7"}
 # CGM is true-5-min: judge the header glucose value on CGM timescales, not the generic 6h
 # validity window — a 2h-old CGM reading must not render as "live" (§A rule 6).
 CGM_FRESH = timedelta(minutes=30)
@@ -135,6 +135,17 @@ def _age_str(age) -> str:
     return f"{secs / 86400:.1f}d"
 
 
+def _date_dot(d, gen_at, *, fresh_days=1, stale_days=4) -> str:
+    """Honest freshness chip for a slower stream's calendar date vs the cycle date — a
+    2-day-old reading is amber, not green (§A rule 6: never pretend fresh)."""
+    try:
+        age = (date.fromisoformat((gen_at or "")[:10]) - date.fromisoformat(str(d))).days
+    except (ValueError, TypeError):
+        return _esc(d)
+    dot = "🟢" if age <= fresh_days else "🟡" if age <= stale_days else "🔴"
+    return f"{dot} {d}"
+
+
 def _tile(title, value, *, sub="", source="", freshness="", target="", accent="") -> str:
     foot = " · ".join(p for p in (f"src: {_esc(source)}" if source else "",
                                   _esc(freshness)) if p)
@@ -148,22 +159,23 @@ def _tile(title, value, *, sub="", source="", freshness="", target="", accent=""
 # ------------------------------------------------------------------------------------------
 # charts
 # ------------------------------------------------------------------------------------------
-def _agp_svg(agp: list, *, width=720, height=240) -> str:
-    """Inline SVG AGP: 70-180 band shaded, p10-90 + p25-75 ribbons, median line."""
-    pad = 30
-    iw, ih = width - 2 * pad, height - 2 * pad
+def _agp_svg(agp: list, *, width=720, height=260) -> str:
+    """Inline SVG AGP with real axes: y ticks (54/70/180/250), x hour ticks, 70-180 band."""
+    padl, padr, padt, padb = 44, 14, 14, 26
+    iw, ih = width - padl - padr, height - padt - padb
 
     def x(slot):
-        return pad + iw * (slot / 95.0)
+        return padl + iw * (slot / 95.0)
 
     def y(val):
         val = max(_Y_MIN, min(_Y_MAX, val))
-        return pad + ih * (1 - (val - _Y_MIN) / (_Y_MAX - _Y_MIN))
+        return padt + ih * (1 - (val - _Y_MIN) / (_Y_MAX - _Y_MIN))
 
     slots = [(i, b) for i, b in enumerate(agp) if b is not None]
     if not slots:
         return ('<svg class="agp" viewBox="0 0 %d %d"><text x="%d" y="%d" '
-                'fill="#888">No AGP data in window</text></svg>' % (width, height, pad, height // 2))
+                'fill="#8091a7">No AGP data in window</text></svg>'
+                % (width, height, padl, height // 2))
 
     def band(key_lo, key_hi, fill):
         top = " ".join(f"{x(i):.1f},{y(b[key_hi]):.1f}" for i, b in slots)
@@ -171,26 +183,43 @@ def _agp_svg(agp: list, *, width=720, height=240) -> str:
         return f'<polygon points="{top} {bot}" fill="{fill}" stroke="none"/>'
 
     median = "M" + " L".join(f"{x(i):.1f},{y(b['p50']):.1f}" for i, b in slots)
-    target = (f'<rect x="{pad}" y="{y(_RANGE_HIGH):.1f}" width="{iw}" '
-              f'height="{y(_RANGE_LOW) - y(_RANGE_HIGH):.1f}" fill="#19875422"/>')
-    axis = (f'<line x1="{pad}" y1="{y(_RANGE_LOW):.1f}" x2="{width-pad}" y2="{y(_RANGE_LOW):.1f}" '
-            f'stroke="#199e70" stroke-dasharray="3 3"/>'
-            f'<line x1="{pad}" y1="{y(_RANGE_HIGH):.1f}" x2="{width-pad}" y2="{y(_RANGE_HIGH):.1f}" '
-            f'stroke="#199e70" stroke-dasharray="3 3"/>')
-    return (f'<svg class="agp" viewBox="0 0 {width} {height}">{target}'
+    target = (f'<rect x="{padl}" y="{y(_RANGE_HIGH):.1f}" width="{iw}" '
+              f'height="{y(_RANGE_LOW) - y(_RANGE_HIGH):.1f}" fill="#19875420"/>')
+    # y-axis gridlines + labels at clinically meaningful glucose levels
+    ylines = []
+    for v in (54, 70, 180, 250):
+        is_thr = v in (70, 180)
+        stroke = "#199e70" if is_thr else "#232a3a"
+        dash = ' stroke-dasharray="3 3"' if is_thr else ""
+        ylines.append(
+            f'<line x1="{padl}" y1="{y(v):.1f}" x2="{width-padr}" y2="{y(v):.1f}" '
+            f'stroke="{stroke}"{dash}/>'
+            f'<text x="{padl-6}" y="{y(v)+3:.1f}" fill="#8091a7" font-size="11" '
+            f'text-anchor="end">{v}</text>')
+    yticks = "".join(ylines)
+    # x-axis hour ticks (Asia/Dubai, 4 slots/hour -> slot = hour*4)
+    xticks = "".join(
+        f'<text x="{x(h*4):.1f}" y="{height-8}" fill="#8091a7" font-size="11" '
+        f'text-anchor="middle">{h:02d}h</text>' for h in (0, 6, 12, 18))
+    return (f'<svg class="agp" viewBox="0 0 {width} {height}" role="img" '
+            f'aria-label="Ambulatory glucose profile">{target}{yticks}'
             f'{band("p10", "p90", "#3987e533")}{band("p25", "p75", "#3987e566")}'
-            f'<path d="{median}" fill="none" stroke="#3987e5" stroke-width="2"/>{axis}'
-            f'<text x="{pad}" y="{pad-8}" fill="#94a3b8" font-size="12">AGP — 10/25/50/75/90 '
-            f'percentile, 70-180 target shaded</text></svg>')
+            f'<path d="{median}" fill="none" stroke="#3987e5" stroke-width="2.5" '
+            f'vector-effect="non-scaling-stroke"/>{xticks}</svg>')
 
 
-def _sparkline(points, color, *, width=200, height=48) -> str:
-    """A thin sparkline for (date, value) points; missing values are skipped, end-dot marked."""
+def _sparkline(points, color, *, width=200, height=48, dot_color=None) -> str:
+    """A thin sparkline for (date, value) points; missing values skipped, end-dot marked.
+
+    ``dot_color`` (defaults to *color*) lets the end marker carry a different hue than the line
+    — used for lab rows, where the line stays neutral and only the latest point shows status.
+    """
     pad = 6
+    dot_color = dot_color or color
     vals = [(i, v) for i, (_, v) in enumerate(points) if v is not None]
     if len(vals) < 2:
         return (f'<svg class="spark" viewBox="0 0 {width} {height}">'
-                f'<text x="{pad}" y="{height//2+4}" fill="#64748b" font-size="12">'
+                f'<text x="{pad}" y="{height//2+4}" fill="#8091a7" font-size="12">'
                 f'not enough data</text></svg>')
     ys = [v for _, v in vals]
     mn, mx = min(ys), max(ys)
@@ -205,10 +234,12 @@ def _sparkline(points, color, *, width=200, height=48) -> str:
 
     path = "M" + " L".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in vals)
     lx, lv = vals[-1]
-    dot = f'<circle cx="{X(lx):.1f}" cy="{Y(lv):.1f}" r="3" fill="{color}"/>'
+    dot = f'<circle cx="{X(lx):.1f}" cy="{Y(lv):.1f}" r="3.2" fill="{dot_color}"/>'
+    # non-scaling-stroke keeps 2px lines even though the viewBox is stretched to the card width
     return (f'<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
             f'<path d="{path}" fill="none" stroke="{color}" stroke-width="2" '
-            f'stroke-linejoin="round" stroke-linecap="round"/>{dot}</svg>')
+            f'vector-effect="non-scaling-stroke" stroke-linejoin="round" '
+            f'stroke-linecap="round"/>{dot}</svg>')
 
 
 def _hex(c):
@@ -232,8 +263,22 @@ def _rho_color(rho) -> str:
     return _mix(_NEUTRAL, _NEG_HUE, -rho)
 
 
+# compact, unambiguous column/row labels for the heatmap (no 3-char truncation)
+HEATMAP_SHORT = {
+    "mean_mgdl": "Mean glu", "tir_pct": "TIR", "cv_pct": "CV", "gri": "GRI",
+    "steps": "Steps", "sleep_total_min": "Sleep", "sleep_deep_min": "Deep",
+    "hr_avg": "HR", "weight_kg": "Weight", "mood": "Mood", "energy": "Energy",
+    "symptom_count": "Sympt", "carbs_g": "Carbs", "titr_pct": "Tight",
+}
+
+
+def _short(field):
+    return HEATMAP_SHORT.get(field, daily.LABELS.get(field, field))
+
+
 def _heatmap(matrix: dict, fields) -> str:
-    """A diverging correlation heatmap over *fields* (values shown selectively; all on hover)."""
+    """A diverging correlation heatmap. Values are shown IN the cells (not hover-gated, which
+    fails on touch); a tap surfaces the full pair + n via the shared data-tip layer."""
     all_fields = matrix.get("fields", [])
     idx = {f: all_fields.index(f) for f in fields if f in all_fields}
     fields = [f for f in fields if f in idx]
@@ -241,25 +286,26 @@ def _heatmap(matrix: dict, fields) -> str:
         return '<p class="muted">Not enough overlapping data for a correlation heatmap yet.</p>'
     grid = matrix["grid"]
     head = '<div class="hm-cell hm-corner"></div>' + "".join(
-        f'<div class="hm-cell hm-col" title="{_esc(daily.LABELS.get(f, f))}">'
-        f'{_esc((daily.LABELS.get(f, f))[:3])}</div>' for f in fields)
+        f'<div class="hm-cell hm-col">{_esc(_short(f))}</div>' for f in fields)
     rows = [f'<div class="hm-row">{head}</div>']
     for a in fields:
-        cells = [f'<div class="hm-cell hm-rowlbl">{_esc(daily.LABELS.get(a, a))}</div>']
+        cells = [f'<div class="hm-cell hm-rowlbl">{_esc(_short(a))}</div>']
         for b in fields:
             cell = grid[idx[a]][idx[b]]
             rho, nn = cell.get("rho"), cell.get("n")
             bg = _rho_color(rho)
-            txt = "" if (rho is None or abs(rho) < 0.3) else f"{rho:+.1f}"[:4].replace("0.", ".")
-            tip = f"{daily.LABELS.get(a, a)} vs {daily.LABELS.get(b, b)}: " + (
+            # show the value in-cell for anything non-trivial; keep tiny cells clean
+            txt = "" if (rho is None or abs(rho) < 0.2) else f"{rho:+.1f}".replace("0.", ".")
+            tip = f"{_short(a)} vs {_short(b)}: " + (
                 f"rho={rho:+.2f} (n={nn})" if rho is not None else f"n={nn} (below floor)")
-            cells.append(f'<div class="hm-cell" style="background:{bg}" title="{_esc(tip)}">'
-                         f'{_esc(txt)}</div>')
+            cells.append(f'<div class="hm-cell" style="background:{bg}" '
+                         f'data-tip="{_esc(tip)}">{_esc(txt)}</div>')
         rows.append(f'<div class="hm-row">{"".join(cells)}</div>')
     legend = ('<div class="hm-legend"><span>−1</span>'
               f'<i style="background:linear-gradient(90deg,{_NEG_HUE},{_NEUTRAL},{_POS_HUE})"></i>'
-              '<span>+1</span> · rank correlation (Spearman), gray = ~0</div>')
-    return f'<div class="heatmap" style="--n:{len(fields)}">' + "".join(rows) + "</div>" + legend
+              '<span>+1</span> · rank correlation (Spearman), gray ≈ 0 · tap a cell for detail</div>')
+    return (f'<div class="heatwrap"><div class="heatmap" style="--n:{len(fields)}">'
+            + "".join(rows) + "</div></div>" + legend)
 
 
 # ------------------------------------------------------------------------------------------
@@ -364,9 +410,12 @@ def _today_tab(c) -> str:
         if val is None:
             continue
         unit = _UNITS.get(field, "")
+        gen_at = (c.get("header") or {}).get("generated_at")
+        stale_days = 10 if field == "weight_kg" else 4  # weight moves slowly; don't cry stale
         tiles.append(_tile(daily.LABELS.get(field, field), f"{_disp(field, val)}{unit}",
-                           sub=f"as of {d}", source="daily",
-                           freshness=f"🟢 {d}" if d else "", accent=_color_of(field)))
+                           source="daily",
+                           freshness=_date_dot(d, gen_at, stale_days=stale_days),
+                           accent=_color_of(field)))
     return _hero(c) + '<div class="grid">' + "".join(tiles) + "</div>"
 
 
@@ -427,6 +476,16 @@ def _doctor_html(items) -> str:
             f'<div class="doc-list">{rows}</div>')
 
 
+def _lab_status_word(m) -> str:
+    """A text cue so status is never colour-alone: high / low / off / ok."""
+    st = m["status"]
+    if st == "good":
+        return "ok"
+    if st == "unknown":
+        return "—"
+    return {"low_good": "high", "high_good": "low"}.get(m["direction"], "off")
+
+
 def _lab_row(m) -> str:
     delta = m.get("delta")
     darrow = ""
@@ -439,11 +498,16 @@ def _lab_row(m) -> str:
                     or (m["direction"] == "high_good" and delta > 0))
         darrow = (f'<span class="ldelta {"good" if good else "bad"}">'
                   f'{"▼" if delta < 0 else "▲"} {abs(delta):g}</span>')
-    spark = _sparkline(list(m.get("trend", [])), STATUS_COLORS.get(m["status"], "#64748b"))
+    scolor = STATUS_COLORS.get(m["status"], STATUS_COLORS["unknown"])
+    # neutral trend line, status only on the latest point (never paint the whole history "red")
+    spark = _sparkline(list(m.get("trend", [])), "#475569", dot_color=scolor)
+    word = _lab_status_word(m)
+    tip = f'{m["name"]}: {m["value"]:g} {m.get("unit") or ""} (ref {m["ref"]}) — {m["status"]}'
     age = f'· {_esc(m["age"])} ago' if m.get("age") else ""
-    return (f'<div class="lab">{_status_dot(m["status"])}'
+    return (f'<div class="lab" data-tip="{_esc(tip)}">{_status_dot(m["status"])}'
             f'<span class="lab-name">{_esc(m["name"])}</span>'
             f'<span class="lab-val">{m["value"]:g}<small> {_esc(m["unit"])}</small></span>'
+            f'<span class="lstat" style="color:{scolor}">{_esc(word)}</span>'
             f'<span class="lab-ref">ref {_esc(m["ref"])}</span>{darrow}'
             f'<span class="lab-spark">{spark}</span>'
             f'<span class="muted lab-age">{_esc(m["ts"][:10])} {age}</span></div>')
@@ -493,15 +557,15 @@ def _trends_tab(c) -> str:
             if n == 0:
                 continue
             color = _color_of(field)
-            _, last = _latest(frame, field)
+            d_last, last = _latest(frame, field)
             unit = _UNITS.get(field, "")
             cards.append(
                 f'<div class="spark-card">'
                 f'<div class="spark-head"><span class="dot" style="background:{color}"></span>'
-                f'<span class="spark-lbl" style="color:{color}">{_esc(daily.LABELS.get(field, field))}</span>'
+                f'<span class="spark-lbl">{_esc(daily.LABELS.get(field, field))}</span>'
                 f'<span class="spark-val">{_disp(field, last)}{_esc(unit)}</span></div>'
                 f'{_sparkline(pts, color)}'
-                f'<div class="spark-foot">{n} days</div></div>')
+                f'<div class="spark-foot">{n} days · as of {_esc(d_last)}</div></div>')
         if cards:
             sections.append(f'<h3 class="sec">{_esc(title)}</h3>'
                             f'<div class="sparks">{"".join(cards)}</div>')
@@ -543,23 +607,28 @@ def _analytics_tab(c) -> str:
     if not windows:
         return "<p>No trend data.</p>"
     buttons = "".join(
-        f'<button class="winbtn" onclick="showWindow({w})" id="winbtn-{w}">{w}d</button>'
-        for w in windows)
-    gstate = ((c.get("header") or {}).get("glucose") or {}).get("state")
-    fresh_badge = _freshness_badge(gstate) if gstate else ""
+        f'<button class="winbtn {"active" if i == 0 else ""}" onclick="showWindow({w})" '
+        f'id="winbtn-{w}">{w}d</button>' for i, w in enumerate(windows))
+    agp_legend = ('<div class="agp-head"><span class="agp-title">AGP — Ambulatory Glucose '
+                  'Profile <span class="muted">(a typical day, Asia/Dubai)</span></span>'
+                  '<span class="agp-legend"><i class="sw sw-band1"></i>10–90% '
+                  '<i class="sw sw-band2"></i>25–75% <i class="sw sw-med"></i>median '
+                  '<i class="sw sw-tgt"></i>70–180 target</span></div>')
     panels = []
     for i, w in enumerate(windows):
         tr = c["trend_by_window"][w] if w in c["trend_by_window"] else c["trend_by_window"][str(w)]
         s = tr.get("summary", {})
-        summary = "".join(_tile(k, _fmt(s.get(k)), source="analytics", freshness=fresh_badge,
-                                sub=f"{w}d window", accent=_color_of(k))
-                          for k in ("mean_mgdl", "tir_pct", "titr_pct", "cv_pct", "gri")
-                          if k in s)
+        asof = _esc((tr.get("generated_at") or "")[:10])
+        summary = "".join(
+            _tile(daily.LABELS.get(k, k), f"{_disp(k, s.get(k))}{_UNITS.get(k, '')}",
+                  source="analytics", freshness=f"as of {asof}" if asof else "",
+                  target=_TARGETS.get(k, ""), sub=f"{w}d window", accent=_color_of(k))
+            for k in ("mean_mgdl", "tir_pct", "titr_pct", "cv_pct", "gri") if k in s)
         style = "" if i == 0 else ' style="display:none"'
         panels.append(
             f'<div class="winpanel" id="winpanel-{w}"{style}>'
             f'<div class="muted">{_esc(tr.get("n_readings"))} readings · {w}-day window</div>'
-            f'{_agp_svg(tr.get("agp", []))}<div class="grid">{summary}</div></div>')
+            f'{agp_legend}{_agp_svg(tr.get("agp", []))}<div class="grid">{summary}</div></div>')
     return f'<div class="winbar">{buttons}</div>' + "".join(panels)
 
 
@@ -665,17 +734,28 @@ def _export_tab(c) -> str:
 _CSS = """
 *{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;
 background:#0b0f1a;color:#e2e8f0;-webkit-font-smoothing:antialiased}
-header{position:sticky;top:0;background:#111827ee;backdrop-filter:blur(8px);padding:12px 16px;
-border-bottom:1px solid #1f2937;z-index:5}.hdr-glucose{font-size:22px;font-weight:700}
+/* one sticky block so the nav can never slide underneath the header */
+.topbar{position:sticky;top:0;z-index:6;background:#0b0f1acc;backdrop-filter:blur(8px);
+border-bottom:1px solid #1f2937}
+header{position:relative;padding:10px 16px}.hdr-glucose{font-size:22px;font-weight:700}
 .hdr-age{color:#94a3b8;font-size:13px}
-nav{display:flex;gap:4px;padding:8px 12px;background:#111827;overflow-x:auto;position:sticky;top:58px;z-index:4}
-nav button{background:#1f2937;color:#cbd5e1;border:0;padding:8px 14px;border-radius:8px;cursor:pointer;
-white-space:nowrap;font-size:14px}nav button.active{background:#3987e5;color:#fff}
+.refresh{position:absolute;top:10px;right:12px;background:#1f2937;color:#cbd5e1;border:0;
+width:36px;height:36px;border-radius:10px;font-size:18px;cursor:pointer}
+.navwrap{position:relative}
+.navwrap::after{content:"";position:absolute;top:0;right:0;width:26px;height:100%;
+background:linear-gradient(90deg,transparent,#0b0f1a);pointer-events:none}
+nav{display:flex;gap:4px;padding:6px 12px;overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav button{background:#1f2937;color:#cbd5e1;border:0;padding:0 14px;min-height:44px;border-radius:8px;
+cursor:pointer;white-space:nowrap;font-size:14px}nav button.active{background:#3987e5;color:#fff}
+nav button:focus-visible{outline:2px solid #3987e5;outline-offset:2px}
+#hhtip{position:fixed;display:none;z-index:20;max-width:180px;background:#1f2937;color:#e2e8f0;
+border:1px solid #334155;border-radius:8px;padding:6px 9px;font-size:12px;pointer-events:none}
 main{padding:16px;max-width:1100px;margin:0 auto}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
 .tile{background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:12px}
 .t-title{font-size:12px;color:#94a3b8}.t-value{font-size:24px;font-weight:700;margin:4px 0}
-.t-sub{font-size:12px;color:#cbd5e1}.t-foot{font-size:11px;color:#64748b;margin-top:6px}
+.t-sub{font-size:12px;color:#cbd5e1}.t-foot{font-size:12px;color:#8091a7;margin-top:6px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1f2937}
 h2{margin:4px 0 14px;font-size:20px}h3.sec{margin:22px 0 10px;font-size:15px;color:#cbd5e1;
 border-left:3px solid #3987e5;padding-left:8px}
@@ -687,14 +767,20 @@ align-items:center;justify-content:center;background:#0b0f1a;flex:0 0 auto}
 .hero-score{display:flex;align-items:center;gap:10px;margin:6px 0}
 .hero-score span{font-size:22px;font-weight:700}.hero-score small{font-size:12px;color:#94a3b8}
 .score-bar{flex:1;height:8px;background:#0b0f1a;border-radius:6px;overflow:hidden}
-.score-bar i{display:block;height:100%;background:linear-gradient(90deg,#d95926,#c98500,#199e70)}
+.score-bar i{display:block;height:100%;background:#199e70}
 .hero-metrics{display:flex;gap:20px;margin-top:8px}
 .hero-metric span{font-size:20px;font-weight:700}.hero-metric label{display:block;font-size:11px;color:#94a3b8}
 .hero-lead{color:#cbd5e1;font-size:13px;margin:10px 0 0}
 .grade-A{color:#0ca30c}.grade-B{color:#199e70}.grade-C{color:#fab219}.grade-D{color:#ec835a}.grade-F{color:#d03b3b}
 .winbar{margin-bottom:10px}.winbtn{background:#1f2937;color:#cbd5e1;border:0;margin-right:4px;
 padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#3987e5;color:#fff}
-.agp{width:100%;height:auto;background:#0b1220;border-radius:10px;margin:8px 0}
+.agp{width:100%;height:auto;background:#0b1220;border-radius:10px;margin:6px 0}
+.agp-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;align-items:baseline;margin-top:8px}
+.agp-title{font-weight:600;font-size:13px}
+.agp-legend{font-size:11px;color:#8091a7;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.sw{display:inline-block;width:12px;height:10px;border-radius:2px;vertical-align:middle;margin-left:6px}
+.sw-band1{background:#3987e533}.sw-band2{background:#3987e566}
+.sw-med{background:#3987e5;height:3px}.sw-tgt{background:#19875440;border:1px dashed #199e70}
 .muted{color:#94a3b8;font-size:13px}.warn{color:#fab219}.insight{color:#cbd5e1;line-height:1.6;
 background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:12px}
 .tab{display:none}.tab.active{display:block}
@@ -703,24 +789,30 @@ pre{white-space:pre-wrap;background:#0b1220;padding:8px;border-radius:8px}
 .spark-card{background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:10px 12px}
 .spark-head{display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:2px}
 .spark-head .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
-.spark-lbl{font-weight:600}.spark-val{margin-left:auto;font-weight:700;color:#e2e8f0}
-.spark{width:100%;height:48px;display:block}.spark-foot{font-size:11px;color:#64748b;margin-top:2px}
+.spark-lbl{font-weight:600;color:#e2e8f0}.spark-val{margin-left:auto;font-weight:700;color:#e2e8f0}
+.spark{width:100%;height:48px;display:block}.spark-foot{font-size:12px;color:#8091a7;margin-top:2px}
 .corr-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
 .corr-card{display:flex;gap:12px;background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:10px 12px}
 .corr-r{flex:0 0 auto;align-self:flex-start;font-weight:700;color:#fff;border-radius:10px;padding:6px 10px;font-size:13px}
 .corr-lbl{font-weight:600;line-height:1.35}.corr-meta{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
 .pill{background:#1f2937;color:#cbd5e1;border-radius:20px;padding:2px 9px;font-size:11px}
-.corr-n{color:#64748b;font-size:11px}
-.heatmap{display:grid;grid-template-columns:110px repeat(var(--n),1fr);gap:2px;overflow-x:auto}
+.corr-n{color:#8091a7;font-size:12px}
+.heatwrap{position:relative;overflow-x:auto;padding-bottom:4px}
+.heatwrap::after{content:"";position:absolute;top:0;right:0;width:22px;height:100%;
+background:linear-gradient(90deg,transparent,#0b0f1a);pointer-events:none}
+.heatmap{display:grid;grid-template-columns:84px repeat(var(--n),minmax(26px,1fr));gap:2px;min-width:min-content}
 .hm-row{display:contents}.hm-cell{aspect-ratio:1;display:flex;align-items:center;justify-content:center;
-font-size:10px;color:#e2e8f0;border-radius:3px;min-width:22px}
-.hm-corner{background:transparent}.hm-col{background:transparent;color:#94a3b8;font-size:10px;aspect-ratio:auto}
-.hm-rowlbl{background:transparent;color:#94a3b8;justify-content:flex-end;padding-right:6px;font-size:11px;aspect-ratio:auto}
+font-size:11px;color:#e2e8f0;border-radius:3px;min-width:26px;cursor:pointer}
+.hm-corner{background:transparent}
+.hm-col{background:transparent;color:#94a3b8;font-size:10px;aspect-ratio:auto;align-items:flex-end;
+white-space:nowrap;line-height:1.05}
+.hm-rowlbl{background:transparent;color:#cbd5e1;justify-content:flex-end;padding-right:6px;font-size:11px;
+aspect-ratio:auto;white-space:nowrap}
 .hm-legend{display:flex;align-items:center;gap:8px;margin-top:10px;color:#94a3b8;font-size:12px}
 .hm-legend i{display:inline-block;width:120px;height:10px;border-radius:5px}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
 .card{background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:12px}
-.card-title{font-weight:700}.card-filter{font-size:11px;color:#64748b;margin:4px 0 8px}
+.card-title{font-weight:700}.card-filter{font-size:12px;color:#8091a7;margin:4px 0 8px}
 .bar-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
 .bar-lbl{flex:0 0 130px;color:#cbd5e1}.bar{flex:1;background:#0b1220;border-radius:6px;height:12px;overflow:hidden}
 .bar i{display:block;height:100%;background:#3987e5}.bar-val{flex:0 0 56px;text-align:right;color:#e2e8f0}
@@ -730,8 +822,10 @@ font-size:10px;color:#e2e8f0;border-radius:3px;min-width:22px}
 .rgrade{font-size:34px;font-weight:800;width:56px;height:56px;border-radius:14px;display:flex;
 align-items:center;justify-content:center;background:#12161f}
 .review-lines{line-height:1.7}
-.heartbeat{margin-top:8px;font-size:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.heartbeat{margin-top:6px;font-size:12px;display:flex;flex-wrap:nowrap;overflow-x:auto;gap:6px;
+align-items:center;scrollbar-width:none}.heartbeat::-webkit-scrollbar{display:none}
 .heartbeat.hb-bad{color:#fab219}.heartbeat.hb-ok{color:#199e70}
+.hb{white-space:nowrap}
 .hb{background:#1f2937;border-radius:10px;padding:2px 8px;color:#cbd5e1}
 .hb-fresh{border:1px solid #199e70}.hb-stale{border:1px solid #fab219;color:#fbbf24}
 .hb-down,.hb-no_data,.hb-future{border:1px solid #d03b3b;color:#fca5a5}
@@ -743,7 +837,7 @@ border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex
 .rev-next{margin:8px 0 0;font-size:14px;color:#cbd5e1}.rev-next.good{color:#0ca30c}
 .rungs{display:flex;flex-direction:column;gap:6px;margin-bottom:6px}
 .rung{display:flex;align-items:center;gap:10px;background:#12161f;border:1px solid #1f2937;border-radius:10px;padding:8px 12px;font-size:13px}
-.rung.done{border-color:#0ca30c55;background:#0ca30c11}.rung .rk{font-weight:700;color:#64748b;flex:0 0 auto}
+.rung.done{border-color:#0ca30c55;background:#0ca30c11}.rung .rk{font-weight:700;color:#8091a7;flex:0 0 auto}
 .rung.done .rk{color:#0ca30c}.rung .rl{flex:1}.rung .rm{color:#94a3b8;font-size:12px}
 .proj{background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:12px}
 .proj.good{border-left:3px solid #0ca30c}.proj.bad{border-left:3px solid #d03b3b}
@@ -760,19 +854,33 @@ border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex
 .lab-ref{flex:0 0 84px;color:#94a3b8;font-size:12px}
 .ldelta{font-size:12px;flex:0 0 auto}.ldelta.good{color:#0ca30c}.ldelta.bad{color:#d03b3b}
 .lab-spark{flex:1;min-width:70px;max-width:150px}.lab-spark .spark{height:30px}
+.lstat{flex:0 0 auto;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
 .lab-age{flex:0 0 auto;font-size:11px}
-@media(max-width:640px){.lab-ref,.lab-age{display:none}.lab-name{flex:0 0 96px}}
+@media(max-width:640px){.lab-spark,.lab-age{display:none}.lab-name{flex:0 0 84px}}
 """
 
 _JS = """
 function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-document.getElementById('tab-'+name).classList.add('active');
-document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-document.getElementById('navbtn-'+name).classList.add('active');window.scrollTo(0,0);}
+var sec=document.getElementById('tab-'+name);if(!sec)return;sec.classList.add('active');
+document.querySelectorAll('nav button').forEach(function(b){b.classList.remove('active');
+b.setAttribute('aria-selected','false');});
+var nb=document.getElementById('navbtn-'+name);if(nb){nb.classList.add('active');
+nb.setAttribute('aria-selected','true');nb.scrollIntoView({block:'nearest',inline:'center'});}
+if(history.replaceState)history.replaceState(null,'','#'+name);window.scrollTo(0,0);}
 function showWindow(w){document.querySelectorAll('.winpanel').forEach(p=>p.style.display='none');
 var el=document.getElementById('winpanel-'+w);if(el)el.style.display='block';
 document.querySelectorAll('.winbtn').forEach(b=>b.classList.remove('active'));
 var bb=document.getElementById('winbtn-'+w);if(bb)bb.classList.add('active');}
+function hhReload(){location.reload();}
+// tap-to-read: touch devices can't hover, so surface any data-tip on tap/click
+function hhTip(e){var el=e.target.closest('[data-tip]');if(!el)return;
+var t=document.getElementById('hhtip');if(!t){t=document.createElement('div');t.id='hhtip';
+document.body.appendChild(t);}t.textContent=el.getAttribute('data-tip');
+t.style.left=Math.min(e.clientX,window.innerWidth-180)+'px';t.style.top=(e.clientY+14)+'px';
+t.style.display='block';clearTimeout(window._tt);window._tt=setTimeout(function(){t.style.display='none';},2600);}
+document.addEventListener('click',hhTip);
+// open the tab named in the URL hash (deep-link / PWA reopen)
+(function(){var h=(location.hash||'').slice(1);if(h&&document.getElementById('tab-'+h))showTab(h);})();
 """
 
 # Recompute the glucose age + freshness on the DEVICE clock, so an offline PWA never shows a
@@ -785,8 +893,16 @@ function hhRefresh(){if(!window.HH||!HH.asOf)return;var ageMs=Date.now()-Date.pa
 var h=ageMs/3600000,badge;if(ageMs< -5*60000)badge='⚠️ FUTURE';else if(h<=HH.freshH)badge='🟢 FRESH';
 else if(h<=HH.staleH)badge='🟡 STALE';else badge='🔴 EXPIRED';
 var a=document.getElementById('hdrAge');if(a)a.textContent=hhAge(ageMs);
-var b=document.getElementById('hdrBadge');if(b)b.textContent=badge;}
+var b=document.getElementById('hdrBadge');if(b)b.textContent=badge;
+// show the reading time in Dubai local time (the user's timezone), not raw UTC ISO
+var t=document.getElementById('hdrAsOf');if(t){try{t.textContent=new Date(HH.asOf)
+.toLocaleString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',
+hour:'2-digit',minute:'2-digit'});}catch(e){}}}
 hhRefresh();setInterval(hhRefresh,60000);
+// live cockpit: when you return to the tab after a while (online), pull the freshest cycle
+var HH_LOADED=Date.now();
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'
+&&navigator.onLine&&(Date.now()-HH_LOADED)>120000){location.reload();}});
 if('serviceWorker' in navigator){navigator.serviceWorker.register('service-worker.js').catch(function(){});}
 """
 
@@ -794,14 +910,19 @@ if('serviceWorker' in navigator){navigator.serviceWorker.register('service-worke
 def render(cockpit: dict) -> str:
     g = cockpit["header"].get("glucose")
     if g:
-        hdr = (f'<div class="hdr-glucose"><span id="hdrVal">{_fmt(g.get("value"),0)}</span> '
+        hdr = (f'<button class="refresh" onclick="hhReload()" title="Refresh now" '
+               f'aria-label="Refresh now">↻</button>'
+               f'<div class="hdr-glucose"><span id="hdrVal">{_fmt(g.get("value"),0)}</span> '
                f'mg/dL · <span id="hdrBadge">{_freshness_badge(g.get("state"))}</span></div>'
-               f'<div class="hdr-age">as of <span id="hdrAsOf">{_esc(g.get("as_of"))}</span> '
+               f'<div class="hdr-age">as of <span id="hdrAsOf" title="{_esc(g.get("as_of"))}">'
+               f'{_esc(g.get("as_of"))}</span> '
                f'(<span id="hdrAge">{_esc(g.get("age"))}</span> ago) — '
                f'last-known-good, not live</div>')
         cfg = json.dumps({"asOf": g.get("as_of"), "freshH": 0.5, "staleH": 1.5})
     else:
-        hdr = '<div class="hdr-glucose">No glucose data</div>'
+        hdr = ('<button class="refresh" onclick="hhReload()" title="Refresh now" '
+               'aria-label="Refresh now">↻</button>'
+               '<div class="hdr-glucose">No glucose data</div>')
         cfg = "null"
 
     hb = cockpit.get("heartbeat") or {}
@@ -810,7 +931,7 @@ def render(cockpit: dict) -> str:
         f'{_esc(s["age"] or "no data")} · {_esc(s["state"])}</span>'
         for s in hb.get("sources", []))
     banner = (f'<div class="heartbeat {"hb-ok" if hb.get("overall_ok") else "hb-bad"}">'
-              f'{"✓ all feeds live" if hb.get("overall_ok") else "⚠ feed(s) stale"} {pills}</div>'
+              f'{"✓ all feeds current" if hb.get("overall_ok") else "⚠ feed(s) stale"} {pills}</div>'
               if hb.get("sources") else "")
 
     bodies = {
@@ -820,15 +941,20 @@ def render(cockpit: dict) -> str:
         "Experiments": _experiments_tab(cockpit), "Custom": _custom_tab(cockpit),
         "Review": _review_tab(cockpit), "Export": _export_tab(cockpit),
     }
-    nav = "".join(f'<button id="navbtn-{t}" class="{"active" if i==0 else ""}" '
+    nav = "".join(f'<button id="navbtn-{t}" role="tab" '
+                  f'aria-selected="{"true" if i==0 else "false"}" '
+                  f'class="{"active" if i==0 else ""}" '
                   f'onclick="showTab(\'{t}\')">{t}</button>' for i, t in enumerate(TABS))
-    tabs = "".join(f'<section id="tab-{t}" class="tab {"active" if i==0 else ""}">'
+    tabs = "".join(f'<section id="tab-{t}" role="tabpanel" class="tab {"active" if i==0 else ""}">'
                    f'<h2>{t}</h2>{bodies[t]}</section>' for i, t in enumerate(TABS))
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<meta name="theme-color" content="#0b0f1a">'
             f'<link rel="manifest" href="manifest.json">'
             f'<title>HealthHub</title><style>{_CSS}</style></head><body>'
-            f'<header>{hdr}{banner}</header><nav>{nav}</nav><main>{tabs}</main>'
+            f'<div class="topbar"><header>{hdr}{banner}</header>'
+            f'<div class="navwrap"><nav role="tablist" aria-label="Sections">{nav}</nav></div></div>'
+            f'<main>{tabs}</main>'
             f'<script>window.HH={cfg};{_JS}{_FRESH_JS}</script></body></html>')
 
 

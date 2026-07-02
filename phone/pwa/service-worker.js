@@ -1,18 +1,17 @@
 /*
- * HealthHub PWA service worker — offline-first cockpit.
+ * HealthHub PWA service worker — live-first, offline-capable cockpit.
  *
- * Caches the dashboard shell + the JSON artifacts so the cockpit opens with NO connection.
- * It serves the last successfully cached cycle output; the dashboard then recomputes each
- * value's age/freshness on the device clock (§A rule 6 — never pretends a cached value is
- * live). On reconnect, a fresh cycle overwrites the artifacts and the next load updates.
+ * The dashboard is a single self-contained HTML file rebuilt every cycle (all values baked in
+ * server-side). So to "refresh and see the latest" we serve the SHELL network-first when online
+ * (falling back to the last cached cycle offline), not cache-first. JSON artifacts are likewise
+ * network-first. Offline, the cockpit opens on the last cached cycle and recomputes each value's
+ * age/freshness on the device clock (§A rule 6 — never pretends a cached value is live).
  */
-const CACHE = 'healthhub-v1';
+const CACHE = 'healthhub-v2';
 const ASSETS = [
-  'dashboard.html',
-  'manifest.json',
-  'metrics.json',
-  'trend.json',
-  'wearables.json'
+  'dashboard.html', 'index.html', 'manifest.json',
+  'metrics.json', 'trend.json', 'wearables.json',
+  'correlation.json', 'labs.json', 'reversal.json', 'health.json'
 ];
 
 self.addEventListener('install', (event) => {
@@ -30,23 +29,24 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Network-first for the HTML shell + JSON (freshest when online), cache fallback offline.
+function networkFirst(request) {
+  return fetch(request, { cache: 'no-store' }).then((resp) => {
+    const copy = resp.clone();
+    caches.open(CACHE).then((c) => c.put(request, copy));
+    return resp;
+  }).catch(() => caches.match(request).then((hit) => hit || caches.match('dashboard.html')));
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
-  // Network-first for the JSON artifacts (freshest when online), falling back to cache offline.
-  // Cache-first for the shell so it always opens instantly.
   const url = new URL(event.request.url);
+  const isShell = event.request.mode === 'navigate'
+    || url.pathname.endsWith('.html') || url.pathname.endsWith('/');
   const isData = url.pathname.endsWith('.json');
-  if (isData) {
-    event.respondWith(
-      fetch(event.request).then((resp) => {
-        const copy = resp.clone();
-        caches.open(CACHE).then((c) => c.put(event.request, copy));
-        return resp;
-      }).catch(() => caches.match(event.request))
-    );
+  if (isShell || isData) {
+    event.respondWith(networkFirst(event.request));
   } else {
-    event.respondWith(
-      caches.match(event.request).then((hit) => hit || fetch(event.request))
-    );
+    event.respondWith(caches.match(event.request).then((hit) => hit || fetch(event.request)));
   }
 });
