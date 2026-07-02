@@ -51,7 +51,7 @@ py-modules = [
     "assess", "insights", "custom", "build_dashboard",
     "config", "heartbeat", "export_excel", "cycle",
     "bearable", "healthifyme", "oura",
-    "daily", "correlate",
+    "daily", "correlate", "labs", "reversal",
 ]
 
 [tool.pytest.ini_options]

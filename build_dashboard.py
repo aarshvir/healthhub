@@ -26,8 +26,11 @@ import correlate
 import daily
 import integrity
 
-TABS = ("Today", "Trends", "Correlations", "Analytics", "Food", "Experiments",
+TABS = ("Today", "Reversal", "Trends", "Correlations", "Analytics", "Food", "Experiments",
         "Custom", "Review", "Export")
+# reserved status palette (dataviz): state colours, never reused for a data series
+STATUS_COLORS = {"good": "#0ca30c", "warning": "#fab219", "critical": "#d03b3b",
+                 "unknown": "#64748b"}
 # CGM is true-5-min: judge the header glucose value on CGM timescales, not the generic 6h
 # validity window — a 2h-old CGM reading must not render as "live" (§A rule 6).
 CGM_FRESH = timedelta(minutes=30)
@@ -76,9 +79,10 @@ HEATMAP_FIELDS = ("mean_mgdl", "tir_pct", "cv_pct", "gri", "steps", "sleep_total
                   "symptom_count", "carbs_g")
 _UNITS = {"mean_mgdl": "mg/dL", "hr_avg": "bpm", "weight_kg": "kg", "carbs_g": "g",
           "active_calories": "kcal", "spo2_avg": "%", "tir_pct": "%", "titr_pct": "%",
-          "tbr_pct": "%", "tar_pct": "%", "cv_pct": "%"}
+          "tbr_pct": "%", "tar_pct": "%", "cv_pct": "%", "gmi_pct": "%",
+          "mage_mgdl": "mg/dL", "dawn_delta_mgdl": "mg/dL"}
 _TARGETS = {"tir_pct": "≥70%", "titr_pct": "≥50%", "tbr_pct": "≤4%", "tar_pct": "≤25%",
-            "cv_pct": "≤36%"}
+            "cv_pct": "≤36%", "gmi_pct": "<6.5%"}
 
 
 def _esc(x) -> str:
@@ -111,7 +115,7 @@ def _disp(field: str, v) -> str:
         return f"{v:.0f}m"
     if field in ("steps", "active_calories", "meal_count", "supplement_count"):
         return f"{v:,.0f}"
-    if field in ("symptom_count", "gri", "hr_avg", "mean_mgdl", "mage_mgdl",
+    if field in ("symptom_count", "gri", "hr_avg", "mean_mgdl", "mage_mgdl", "dawn_delta_mgdl",
                  "tir_pct", "titr_pct", "tbr_pct", "tar_pct"):
         return f"{v:.0f}"
     return f"{v:.1f}"
@@ -265,7 +269,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
                   food_ranking=None, experiments=None, assessment=None,
                   insights_text="", quarantine=None, custom_cards=None,
                   heartbeat=None, daily_frame=None, correlation=None,
-                  review_text="", now=None) -> dict:
+                  review_text="", labs=None, reversal=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
@@ -285,7 +289,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "insights_text": insights_text or "", "quarantine": quarantine or [],
         "custom_cards": custom_cards or [], "heartbeat": heartbeat or {},
         "daily_frame": daily_frame or [], "correlation": correlation or {},
-        "review_text": review_text or "",
+        "review_text": review_text or "", "labs": labs or {}, "reversal": reversal or {},
     }
 
 
@@ -338,17 +342,21 @@ def _today_tab(c) -> str:
         return _freshness_badge("fresh" if (m.get(k) or {}).get("valid") else "stale")
 
     tiles = []
-    # glucose KPIs come from the clinical metrics (with real validity/freshness)
-    glucose_kpis = [("tir_pct", "Time in Range"), ("titr_pct", "Tight Range (70-140)"),
-                    ("gri", "Glycemia Risk Index"), ("cv_pct", "Variability (CV)"),
-                    ("mean_mgdl", "Mean glucose")]
+    # glucose KPIs come from the clinical metrics (with real validity/freshness). GMI leads —
+    # it is the "am I still in the diabetic range?" number for a reversal user.
+    glucose_kpis = [("gmi_pct", "GMI (est. HbA1c)"), ("tir_pct", "Time in Range"),
+                    ("titr_pct", "Tight Range (70-140)"), ("tbr_pct", "Below range (<70)"),
+                    ("tar_pct", "Above range (>180)"), ("gri", "Glycemia Risk Index"),
+                    ("cv_pct", "Variability (CV)"), ("mean_mgdl", "Mean glucose"),
+                    ("mage_mgdl", "MAGE (swings)"), ("dawn_delta_mgdl", "Dawn rise")]
     for field, title in glucose_kpis:
         val = mv(field)
         unit = _UNITS.get(field, "")
         shown = "—" if val is None else f"{_disp(field, val)}{unit}"
         tiles.append(_tile(title, shown, source="clinical", freshness=fresh(field),
                            target=_TARGETS.get(field, ""), accent=_color_of(field)))
-    # every other stream's most-recent day, straight from the unified daily frame
+    # every other stream's most-recent day, straight from the unified daily frame, each with
+    # its own true "as of" date (§A rule 6: slower streams show their real recency).
     other_kpis = ["steps", "sleep_total_min", "hr_avg", "weight_kg",
                   "mood", "energy", "symptom_count", "carbs_g"]
     for field in other_kpis:
@@ -357,8 +365,117 @@ def _today_tab(c) -> str:
             continue
         unit = _UNITS.get(field, "")
         tiles.append(_tile(daily.LABELS.get(field, field), f"{_disp(field, val)}{unit}",
-                           sub=f"as of {d}", source="daily", accent=_color_of(field)))
+                           sub=f"as of {d}", source="daily",
+                           freshness=f"🟢 {d}" if d else "", accent=_color_of(field)))
     return _hero(c) + '<div class="grid">' + "".join(tiles) + "</div>"
+
+
+def _status_dot(status) -> str:
+    c = STATUS_COLORS.get(status, STATUS_COLORS["unknown"])
+    return f'<span class="sdot" style="background:{c}" title="{_esc(status)}"></span>'
+
+
+def _ladder_html(lad) -> str:
+    if not lad.get("ok"):
+        return '<p class="muted">Not enough glucose data yet to place you on the remission ladder.</p>'
+    prog = lad["overall_progress"] * 100.0
+    rungs = "".join(
+        f'<div class="rung {"done" if r["achieved"] else ""}">'
+        f'<span class="rk">{"✓" if r["achieved"] else "○"}</span>'
+        f'<span class="rl">GMI &lt;{r["gmi"]:g} — {_esc(r["label"])}</span>'
+        f'<span class="rm">mean ≤{r["mean"]:g}</span></div>' for r in lad["rungs"])
+    nxt = lad.get("next")
+    if nxt:
+        goal = (f'<p class="rev-next">Next: bring your average down <b>{nxt["mean_gap"]:.0f} mg/dL</b> '
+                f'(to ≤{nxt["mean_needed"]:g}) to reach <b>GMI &lt;{nxt["gmi"]:g}</b> — '
+                f'{_esc(nxt["label"])}.</p>')
+    else:
+        goal = '<p class="rev-next good">🎉 You are in the non-diabetic GMI range — hold it.</p>'
+    return (f'<div class="rev-hero"><div class="rev-gmi"><span>{lad["current_gmi"]:.1f}</span>'
+            f'<label>current GMI (est. HbA1c)</label>'
+            f'<div class="muted">mean {lad["current_mean"]:.0f} mg/dL</div></div>'
+            f'<div class="rev-prog"><div class="score-bar big"><i style="width:{prog:.0f}%"></i></div>'
+            f'<div class="muted">{prog:.0f}% of the way from diagnosis (7.5) to non-diabetic (5.7)</div>'
+            f'{goal}</div></div><div class="rungs">{rungs}</div>')
+
+
+def _projection_html(proj) -> str:
+    if not proj.get("ok"):
+        return (f'<p class="muted">A 90-day GMI projection needs ~2 weeks of daily data '
+                f'(have {proj.get("n", 0)}).</p>')
+    arrow = {"improving": "↓", "worsening": "↑", "flat": "→"}.get(proj["direction"], "→")
+    cls = {"improving": "good", "worsening": "bad", "flat": ""}.get(proj["direction"], "")
+    return (f'<div class="proj {cls}"><div class="proj-main">{arrow} at your current '
+            f'{proj["horizon_days"]}-day trend, GMI projects to <b>{proj["projected_gmi"]:.1f}%</b> '
+            f'(mean ≈ {proj["projected_mean"]:.0f} mg/dL)</div>'
+            f'<div class="muted">from {proj["current_gmi"]:.1f}% now · '
+            f'{proj["slope_per_month"]:+.1f} mg/dL per month · fit r²={proj["r2"]:.2f} · '
+            f'n={proj["n"]} days · a trajectory, not a promise</div></div>')
+
+
+def _doctor_html(items) -> str:
+    if not items:
+        return ""
+    rows = "".join(
+        f'<div class="doc-item p{it.get("priority", 2)}">'
+        f'<span class="doc-area">{_esc(it.get("area"))}</span>'
+        f'<div><div class="doc-text">{_esc(it.get("text"))}</div>'
+        f'<div class="muted">{_esc(it.get("based_on"))}</div></div></div>' for it in items)
+    return ('<h3 class="sec">For your doctor</h3>'
+            '<p class="muted">This is a behaviour/analytics tool, not medical advice — bring '
+            'these to a physician.</p>'
+            f'<div class="doc-list">{rows}</div>')
+
+
+def _lab_row(m) -> str:
+    delta = m.get("delta")
+    darrow = ""
+    if delta is not None and abs(delta) > 1e-9:
+        opt = m.get("optimal")
+        if opt is not None:   # "better" = moved closer to the optimal target (works for any direction)
+            good = abs(m["value"] - opt) < abs((m["value"] - delta) - opt)
+        else:
+            good = ((m["direction"] == "low_good" and delta < 0)
+                    or (m["direction"] == "high_good" and delta > 0))
+        darrow = (f'<span class="ldelta {"good" if good else "bad"}">'
+                  f'{"▼" if delta < 0 else "▲"} {abs(delta):g}</span>')
+    spark = _sparkline(list(m.get("trend", [])), STATUS_COLORS.get(m["status"], "#64748b"))
+    age = f'· {_esc(m["age"])} ago' if m.get("age") else ""
+    return (f'<div class="lab">{_status_dot(m["status"])}'
+            f'<span class="lab-name">{_esc(m["name"])}</span>'
+            f'<span class="lab-val">{m["value"]:g}<small> {_esc(m["unit"])}</small></span>'
+            f'<span class="lab-ref">ref {_esc(m["ref"])}</span>{darrow}'
+            f'<span class="lab-spark">{spark}</span>'
+            f'<span class="muted lab-age">{_esc(m["ts"][:10])} {age}</span></div>')
+
+
+def _labs_html(labs) -> str:
+    groups = labs.get("groups", {})
+    if not groups:
+        return ('<h3 class="sec">Labs</h3><p class="muted">No labs entered yet. Add your panel '
+                '(HbA1c, ALT/AST/GGT, hs-CRP, testosterone, prolactin, vitamin D…) to track liver, '
+                'inflammation and hormones alongside glucose.</p>')
+    out = ['<h3 class="sec">Labs — liver · inflammation · hormones · micronutrients</h3>']
+    ncrit = len(labs.get("critical", []))
+    if ncrit:
+        out.append(f'<p class="muted">{ncrit} marker(s) out of range (red) — see "For your doctor".</p>')
+    for group, markers in groups.items():
+        rows = "".join(_lab_row(m) for m in markers)
+        out.append(f'<div class="lab-group"><div class="lg-title">{_esc(group)}</div>{rows}</div>')
+    return "".join(out)
+
+
+def _reversal_tab(c) -> str:
+    rev = c.get("reversal") or {}
+    labs = c.get("labs") or {}
+    if not rev and not labs:
+        return ('<p class="muted">The reversal view lights up once glucose (and, ideally, your '
+                'lab panel) are flowing — it shows your GMI remission ladder, a 90-day projection, '
+                'your liver/inflammation/hormone labs, and the short list for your doctor.</p>')
+    parts = ['<h3 class="sec">Remission ladder</h3>', _ladder_html(rev.get("ladder", {})),
+             '<h3 class="sec">90-day GMI projection</h3>', _projection_html(rev.get("projection", {})),
+             _doctor_html(rev.get("doctor_list", [])), _labs_html(labs)]
+    return "".join(parts)
 
 
 def _trends_tab(c) -> str:
@@ -619,6 +736,32 @@ align-items:center;justify-content:center;background:#12161f}
 .hb-fresh{border:1px solid #199e70}.hb-stale{border:1px solid #fab219;color:#fbbf24}
 .hb-down,.hb-no_data,.hb-future{border:1px solid #d03b3b;color:#fca5a5}
 .xbtn{display:inline-block;background:#3987e5;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700}
+.rev-hero{display:flex;gap:20px;align-items:center;background:linear-gradient(135deg,#12161f,#161d2e);
+border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex-wrap:wrap}
+.rev-gmi span{font-size:40px;font-weight:800;color:#3987e5}.rev-gmi label{display:block;font-size:11px;color:#94a3b8}
+.rev-prog{flex:1;min-width:220px}.score-bar.big{height:12px}
+.rev-next{margin:8px 0 0;font-size:14px;color:#cbd5e1}.rev-next.good{color:#0ca30c}
+.rungs{display:flex;flex-direction:column;gap:6px;margin-bottom:6px}
+.rung{display:flex;align-items:center;gap:10px;background:#12161f;border:1px solid #1f2937;border-radius:10px;padding:8px 12px;font-size:13px}
+.rung.done{border-color:#0ca30c55;background:#0ca30c11}.rung .rk{font-weight:700;color:#64748b;flex:0 0 auto}
+.rung.done .rk{color:#0ca30c}.rung .rl{flex:1}.rung .rm{color:#94a3b8;font-size:12px}
+.proj{background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:12px}
+.proj.good{border-left:3px solid #0ca30c}.proj.bad{border-left:3px solid #d03b3b}
+.proj-main{font-size:15px;margin-bottom:4px}
+.doc-list{display:flex;flex-direction:column;gap:8px}
+.doc-item{display:flex;gap:10px;background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:10px 12px}
+.doc-item.p1{border-left:3px solid #d03b3b}.doc-item.p2{border-left:3px solid #fab219}
+.doc-area{flex:0 0 84px;font-size:11px;color:#94a3b8;text-transform:uppercase;padding-top:2px}
+.doc-text{font-weight:600}
+.lab-group{margin-bottom:14px}.lg-title{font-size:12px;color:#94a3b8;text-transform:uppercase;margin:8px 0 4px}
+.lab{display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid #1f2937;font-size:13px}
+.sdot{width:10px;height:10px;border-radius:50%;flex:0 0 auto}
+.lab-name{flex:0 0 130px;font-weight:600}.lab-val{flex:0 0 92px;font-weight:700}.lab-val small{color:#94a3b8;font-weight:400}
+.lab-ref{flex:0 0 84px;color:#94a3b8;font-size:12px}
+.ldelta{font-size:12px;flex:0 0 auto}.ldelta.good{color:#0ca30c}.ldelta.bad{color:#d03b3b}
+.lab-spark{flex:1;min-width:70px;max-width:150px}.lab-spark .spark{height:30px}
+.lab-age{flex:0 0 auto;font-size:11px}
+@media(max-width:640px){.lab-ref,.lab-age{display:none}.lab-name{flex:0 0 96px}}
 """
 
 _JS = """
@@ -671,11 +814,11 @@ def render(cockpit: dict) -> str:
               if hb.get("sources") else "")
 
     bodies = {
-        "Today": _today_tab(cockpit), "Trends": _trends_tab(cockpit),
-        "Correlations": _correlations_tab(cockpit), "Analytics": _analytics_tab(cockpit),
-        "Food": _food_tab(cockpit), "Experiments": _experiments_tab(cockpit),
-        "Custom": _custom_tab(cockpit), "Review": _review_tab(cockpit),
-        "Export": _export_tab(cockpit),
+        "Today": _today_tab(cockpit), "Reversal": _reversal_tab(cockpit),
+        "Trends": _trends_tab(cockpit), "Correlations": _correlations_tab(cockpit),
+        "Analytics": _analytics_tab(cockpit), "Food": _food_tab(cockpit),
+        "Experiments": _experiments_tab(cockpit), "Custom": _custom_tab(cockpit),
+        "Review": _review_tab(cockpit), "Export": _export_tab(cockpit),
     }
     nav = "".join(f'<button id="navbtn-{t}" class="{"active" if i==0 else ""}" '
                   f'onclick="showTab(\'{t}\')">{t}</button>' for i, t in enumerate(TABS))
@@ -696,17 +839,21 @@ def write_dashboard(html_str: str, path: str = "dashboard.html") -> str:
 
 
 def self_check(cockpit: dict) -> list[str]:
-    """Invariant: a quarantined value must never be rendered as a plotted glucose tile."""
+    """Invariant: a quarantined reading must never be rendered as trusted glucose.
+
+    Checked STRUCTURALLY (not by scanning rendered HTML): every plotted glucose surface —
+    the header last-known-good, the daily-frame means, and each window's trend/AGP — is
+    computed only from the clean store, so the only place a raw quarantined reading could
+    surface is the header value. We assert that directly. (A substring scan of the HTML is
+    unsound: small quarantined values collide with SVG coordinates, and int-formatted tiles
+    dodge a ``str(float)`` match — so it both false-alarms and misses.)
+    """
     violations: list[str] = []
     g = cockpit["header"].get("glucose")
     if g and g.get("state") == "future":
         violations.append("header shows a future-dated glucose value")
-    bad = {str(q.get("payload", {}).get("glucose_mgdl")) for q in cockpit.get("quarantine", [])}
-    bad.discard("None")
-    html_out = render(cockpit)
-    for tab in ("Today", "Analytics", "Trends"):
-        seg = html_out.split(f'id="tab-{tab}"', 1)[-1].split("</section>", 1)[0]
-        for v in bad:
-            if v and v in seg:
-                violations.append(f"quarantined value {v} appears plotted in {tab}")
+    bad = {q.get("payload", {}).get("glucose_mgdl") for q in cockpit.get("quarantine", [])}
+    bad.discard(None)
+    if g and g.get("value") in bad:
+        violations.append(f"header shows quarantined glucose value {g.get('value')}")
     return violations

@@ -129,22 +129,41 @@ def gri_components(cats: dict[str, float]) -> tuple[float, float, float]:
     """
     hypo = cats["vlow"] + 0.8 * cats["low"]
     hyper = cats["vhigh"] + 0.5 * cats["high"]
-    gri = min(100.0, 3.0 * hypo + 1.6 * hyper)
+    raw = 3.0 * hypo + 1.6 * hyper
+    # min(100, nan) would wrongly return 100 (max risk) for empty data — guard it.
+    gri = float("nan") if np.isnan(raw) else min(100.0, raw)
     return gri, hypo, hyper
+
+
+def _alternating(ext: list[float]) -> list[float]:
+    """Keep only genuine turning points: endpoints + interior slope-sign changes."""
+    if len(ext) <= 2:
+        return ext
+    out = [ext[0]]
+    for k in range(1, len(ext) - 1):
+        if (ext[k] - out[-1]) * (ext[k + 1] - ext[k]) < 0:
+            out.append(ext[k])
+        # otherwise ext[k] is monotonic with its retained neighbour — absorb it
+    out.append(ext[-1])
+    return out
 
 
 def mage(values: np.ndarray) -> float:
     """Mean Amplitude of Glycemic Excursions exceeding 1 SD.
 
-    Original definition: Service FJ et al., *Diabetes* 1970;19:644-655. The reproducible
-    turning-point algorithm follows Baghurst PA, *Diabetes Technol Ther* 2011;13:296-302:
+    Original definition: Service FJ et al., *Diabetes* 1970;19:644-655. Reproducible
+    turning-point algorithm per Baghurst PA, *Diabetes Technol Ther* 2011;13:296-302:
 
     1. SD = sample standard deviation (ddof=1) of the series.
-    2. Collapse consecutive-equal runs (so a flat-topped plateau is still recognised as a
-       single turning point — plateaus are common in CGM traces), then identify turning
-       points: the two endpoints plus every interior local extremum (slope sign change).
-    3. Excursions are the absolute differences between consecutive turning points.
-    4. MAGE = mean amplitude of the excursions whose amplitude exceeds 1 SD.
+    2. Collapse consecutive-equal runs (a flat-topped plateau is one turning point — plateaus
+       are common in CGM traces), then take the turning points: the two endpoints plus every
+       interior local extremum (slope sign change).
+    3. **Eliminate spurious turning points** — iteratively remove the smallest excursion while
+       it is below 1 SD, re-collapsing to alternating extrema each time. This is the step that
+       distinguishes Baghurst from a naive turning-point difference: a large excursion
+       interrupted by a sub-threshold counter-movement (e.g. 100→200→190→300) is counted as
+       one excursion (200), not split into small pieces.
+    4. MAGE = mean amplitude of the surviving excursions (those exceeding 1 SD).
 
     Returns ``nan`` if fewer than 3 readings; ``0.0`` if no excursion exceeds 1 SD.
     """
@@ -156,18 +175,26 @@ def mage(values: np.ndarray) -> float:
     if sd == 0.0:
         return 0.0
 
-    # Collapse runs of equal values; otherwise a plateau (e.g. 100,150,150,150,100) yields
-    # a zero slope-product at the plateau and the excursion is missed entirely.
+    # Collapse runs of equal values so a plateau doesn't hide an excursion, then reduce to
+    # genuine alternating turning points (endpoints + interior extrema).
     gd = g[np.concatenate(([True], np.diff(g) != 0))]
+    ext = _alternating(gd.tolist())
 
-    turning = [0]
-    for i in range(1, gd.size - 1):
-        if (gd[i] - gd[i - 1]) * (gd[i + 1] - gd[i]) < 0:  # slope sign change -> extremum
-            turning.append(i)
-    turning.append(gd.size - 1)
+    # Iteratively drop sub-threshold reversals (Baghurst elimination).
+    while len(ext) > 2:
+        amps = np.abs(np.diff(ext))
+        i = int(np.argmin(amps))
+        if amps[i] >= sd:
+            break
+        if i == 0:
+            del ext[1]                    # keep the global start, drop the first interior tp
+        elif i == len(ext) - 2:
+            del ext[-2]                   # keep the global end, drop the last interior tp
+        else:
+            del ext[i:i + 2]             # interior sub-threshold reversal -> merge across it
+        ext = _alternating(ext)
 
-    extrema = gd[turning]
-    amplitudes = np.abs(np.diff(extrema))
+    amplitudes = np.abs(np.diff(ext))
     qualifying = amplitudes[amplitudes > sd]
     if qualifying.size == 0:
         return 0.0

@@ -29,7 +29,9 @@ import heartbeat as heartbeat_mod
 import insights as insights_mod
 import integrity
 import journal
+import labs as labs_mod
 import mood_energy
+import reversal as reversal_mod
 import symptoms
 import wearables as wearables_mod
 
@@ -52,6 +54,8 @@ class CycleResult:
     correlation: dict = dataclasses.field(default_factory=dict)
     daily_frame: list = dataclasses.field(default_factory=list)
     review_text: str = ""
+    labs: dict = dataclasses.field(default_factory=dict)
+    reversal: dict = dataclasses.field(default_factory=dict)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -105,12 +109,39 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         journal.ingest(store, log_source, now=now)
     store.prune(now=now, retention_days=prune_retention)
 
+    # Wearables + the unified daily frame are built FIRST so downstream stages can use them:
+    # the daily frame supplies the post-meal-walk adherence that powers the metabolic score,
+    # and the wearables feed the cross-stream correlation.
+    violations: list[str] = []
+    wears = None
+    if wearables_source is not None:
+        wears = wearables_mod.build(wearables_source, now=now)
+        violations += wearables_mod.self_check(wears, now=now)
+
+    corr_window = max(90, window_days)  # widen so associations have enough overlapping days
+    daily_frame = daily_mod.build(store, window_days=corr_window, now=now, wearables=wears)
+    correlation = correlate_mod.analyze(daily_frame)
+    review_text = correlate_mod.narrate(correlation["findings"], redact=True)
+    violations += daily_mod.self_check(daily_frame) + correlate_mod.self_check(correlation)
+
+    # derive post-meal-walk adherence from the recent daily frame (unless caller supplied it),
+    # so the Daily Metabolic Score is populated in the live cycle instead of silently dropping.
+    if walk_adherence is None:
+        recent_walk = [r["walk"] for r in daily_frame if r.get("walk") is not None][-window_days:]
+        walk_adherence = (sum(recent_walk) / len(recent_walk)) if recent_walk else None
+
     window_df = store.glucose_last_days(window_days, now=now)
     metrics = clinical.compute_metrics(window_df, now=now, subject=subject,
                                        walk_adherence=walk_adherence)
     trend = analytics.compute(store, window_days=window_days, now=now)
-    violations = (store.self_check(now=now) + analytics.self_check(trend)
-                  + _metrics_self_check(metrics))
+    violations += (store.self_check(now=now) + analytics.self_check(trend)
+                   + _metrics_self_check(metrics))
+
+    # labs (liver/inflammation/hormones/…) + the diabetes-reversal view (GMI ladder, 90-day
+    # projection, doctor-ready list) — the non-glucose half of the mission.
+    labs_panel = labs_mod.panel(store, now=now)
+    reversal_view = reversal_mod.build(daily_frame, metrics=metrics, labs_panel=labs_panel)
+    violations += labs_mod.self_check(labs_panel) + reversal_mod.self_check(reversal_view)
 
     # log-driven analytics (only meaningful once a journal exists)
     food_ranking = food_impact.rank_foods(store, now=now)
@@ -134,14 +165,15 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         os.makedirs(out_dir, exist_ok=True)
         clinical.write_metrics(metrics, os.path.join(out_dir, "metrics.json"))
         _write_json(trend, os.path.join(out_dir, "trend.json"))
+        _write_json(correlation, os.path.join(out_dir, "correlation.json"))
+        _write_json(labs_panel, os.path.join(out_dir, "labs.json"))
+        _write_json(reversal_view, os.path.join(out_dir, "reversal.json"))
         artifacts["metrics"] = os.path.join(out_dir, "metrics.json")
         artifacts["trend"] = os.path.join(out_dir, "trend.json")
-
-    wears = None
-    if wearables_source is not None:
-        wears = wearables_mod.build(wearables_source, now=now)
-        violations += wearables_mod.self_check(wears, now=now)
-        if out_dir:
+        artifacts["correlation"] = os.path.join(out_dir, "correlation.json")
+        artifacts["labs"] = os.path.join(out_dir, "labs.json")
+        artifacts["reversal"] = os.path.join(out_dir, "reversal.json")
+        if wears is not None:
             artifacts["wearables"] = wearables_mod.write_wearables(
                 wears, os.path.join(out_dir, "wearables.json"))
 
@@ -164,17 +196,6 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
     if out_dir:
         artifacts["health"] = os.path.join(out_dir, "health.json")
 
-    # unified per-day frame (all streams) + cross-stream correlation intelligence.
-    # widen to >=90 days so associations have enough overlapping days to be meaningful.
-    corr_window = max(90, window_days)
-    daily_frame = daily_mod.build(store, window_days=corr_window, now=now, wearables=wears)
-    correlation = correlate_mod.analyze(daily_frame)
-    review_text = correlate_mod.narrate(correlation["findings"], redact=True)
-    violations += daily_mod.self_check(daily_frame) + correlate_mod.self_check(correlation)
-    if out_dir:
-        _write_json(correlation, os.path.join(out_dir, "correlation.json"))
-        artifacts["correlation"] = os.path.join(out_dir, "correlation.json")
-
     quarantined = store.quarantined()
     if dashboard:
         trend_by_window = {int(w): analytics.compute(store, window_days=int(w), now=now)
@@ -185,7 +206,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             experiments=experiment_results, assessment=assessment,
             insights_text=insights_text, quarantine=quarantined,
             custom_cards=custom_cards, heartbeat=health,
-            daily_frame=daily_frame, correlation=correlation, review_text=review_text, now=now)
+            daily_frame=daily_frame, correlation=correlation, review_text=review_text,
+            labs=labs_panel, reversal=reversal_view, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
@@ -207,5 +229,6 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         self_check_violations=violations, assessment=assessment, insights_text=insights_text,
         food_ranking=food_ranking, experiments=experiment_results,
         custom_cards=custom_cards, heartbeat=health, correlation=correlation,
-        daily_frame=daily_frame, review_text=review_text, artifacts=artifacts,
+        daily_frame=daily_frame, review_text=review_text, labs=labs_panel,
+        reversal=reversal_view, artifacts=artifacts,
     )
