@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
