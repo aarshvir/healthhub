@@ -158,3 +158,25 @@ def test_cycle_runs_without_source_on_prepopulated_store(env):
     result = engine.run_cycle(store=st, now=NOW, window_days=7, out_dir=str(out))
     assert result.n_stored == 0  # no source this cycle
     assert result.metrics["mean_mgdl"]["value"] == pytest.approx(150.0)
+
+
+def test_journal_glucose_bridge_feeds_store(env):
+    """CGM checks logged in the journal (glucose_mgdl column) become real readings — the
+    dashboard runs on YOUR data even before a 5-min feed is wired (no demo pollution)."""
+    import journal
+    st, out = env
+    log_csv = (
+        "entry_id,date,time,type,item,glucose_mgdl,tags,note\n"
+        "1,2026-06-28,07:25,wake,woke,132,wake; dawn,waking CGM\n"
+        "2,2026-06-28,09:46,glucose,CGM check,150,glucose-watch,fasted\n"
+        "3,2026-06-28,13:00,meal,Paneer,,meal,no reading on this row\n"
+    )
+    result = engine.run_cycle(store=st, log_source=journal.CsvLogSource(text=log_csv),
+                              now=NOW, window_days=7, out_dir=str(out))
+    assert result.n_stored == 2                    # the two logged readings, not the meal row
+    vals = sorted(st.glucose_all()["glucose_mgdl"].tolist())
+    assert vals == [132.0, 150.0]
+    # idempotent: a second cycle re-reading the same journal must not duplicate
+    result2 = engine.run_cycle(store=st, log_source=journal.CsvLogSource(text=log_csv),
+                               now=NOW, window_days=7, out_dir=str(out))
+    assert len(st.glucose_all()) == 2, result2.n_stored

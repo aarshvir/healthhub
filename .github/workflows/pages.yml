@@ -1,8 +1,13 @@
-name: Cycle → Pages
+name: Cycle → live dashboard
 
 # Always-on layer (Part 3.2): run the engine every 15 minutes and publish the dashboard.
-# Secrets reach the job ONLY as env; cycle.py's leak gate refuses to publish if any secret
-# value lands in an artifact. Access-gate the published URL per docs/CLOUD_SETUP.md.
+#
+# PRIVACY RULE (enforced below, not just documented): real health data is ONLY deployed to
+# Cloudflare Pages (put its URL behind Cloudflare Access — one toggle, free). The public
+# GitHub Pages deploy — and even the downloadable pages artifact — run ONLY in demo mode
+# (no live sources configured), so PHI can never land on an ungated public URL or a public
+# workflow artifact. Secrets reach the job ONLY as env; cycle.py's leak gate refuses to
+# publish if any secret value lands in an artifact.
 on:
   schedule:
     - cron: "*/15 * * * *"
@@ -20,6 +25,10 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+    outputs:
+      real_data: ${{ steps.mode.outputs.real }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install --no-deps -e .
+          pip install gspread google-auth   # live Google-Sheet reads (journal/wearables/labs)
       - name: Run cycle → publish/
         env:
           DEXCOM_USERNAME: ${{ secrets.DEXCOM_USERNAME }}
@@ -39,23 +49,51 @@ jobs:
           GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
           HEALTH_LOG_SHEET_ID: ${{ vars.HEALTH_LOG_SHEET_ID }}
           WEARABLES_SHEET_ID: ${{ vars.WEARABLES_SHEET_ID }}
+          LABS_SHEET_ID: ${{ vars.LABS_SHEET_ID }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OURA_TOKEN: ${{ secrets.OURA_TOKEN }}
         run: |
           healthhub-cycle --out-dir publish
           cp publish/dashboard.html publish/index.html
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+          cp phone/pwa/manifest.json phone/pwa/service-worker.js publish/ 2>/dev/null || true
+      - name: Detect real vs demo data
+        id: mode
+        run: |
+          real=$(python -c "import json; d=json.load(open('publish/run.json')); \
+            p=d.get('presence',{}); \
+            print(str(d.get('glucose_mode')!='demo-fixture' or p.get('sheets',False)).lower())")
+          echo "real=$real" >> "$GITHUB_OUTPUT"
+          echo "real_data=$real"
+      # ---- gated deploy: Cloudflare Pages (enable Access on the project — free) ----
+      - name: Deploy to Cloudflare Pages (gated)
+        if: ${{ env.HAS_CF == 'true' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT }}
+        run: |
+          npx --yes wrangler@3 pages deploy publish \
+            --project-name "${CF_PAGES_PROJECT:-healthhub-cockpit}" \
+            --branch main --commit-dirty=true
+      # on a public repo, workflow artifacts are world-downloadable -> demo mode only
+      - name: Upload pages artifact (demo mode only)
+        if: ${{ steps.mode.outputs.real != 'true' }}
+        uses: actions/upload-pages-artifact@v3
         with:
           path: publish
 
-  deploy:
+  # public GitHub Pages — DEMO DATA ONLY (skipped the moment any real source is configured)
+  deploy-github-pages:
     needs: build
+    if: ${{ needs.build.outputs.real_data != 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - id: deployment
         uses: actions/deploy-pages@v4

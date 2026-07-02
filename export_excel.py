@@ -21,7 +21,6 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 import analytics
-import clinical
 import experiments as experiments_mod
 import food_impact
 import heartbeat as heartbeat_mod
@@ -214,7 +213,6 @@ def write_excel(store, path: str = "HealthOS_500d.xlsx", *, now=None, wearables=
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    import glucose as glucose_mod
     import store as store_mod
 
     p = argparse.ArgumentParser(prog="healthhub-export", description=__doc__)

@@ -139,7 +139,11 @@ class GSheetLogSource:
 
         gc = (gspread.service_account(filename=self.service_account_path)
               if self.service_account_path else gspread.service_account())
-        ws = gc.open_by_key(self.sheet_id).worksheet(self.worksheet)
+        sh = gc.open_by_key(self.sheet_id)
+        try:
+            ws = sh.worksheet(self.worksheet)
+        except gspread.WorksheetNotFound:
+            ws = sh.sheet1   # tab was renamed — fall back to the first tab
         return parse_rows(ws.get_all_records())
 
 
