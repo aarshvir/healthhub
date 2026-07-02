@@ -352,31 +352,72 @@ def _latest(frame, field):
 # ------------------------------------------------------------------------------------------
 # tabs
 # ------------------------------------------------------------------------------------------
+def _top_streak(c):
+    """The most motivating live streak for the hero chip (prefer remission)."""
+    order = {"remission": 0, "titr": 1, "tir": 2, "safe": 3, "steady": 4, "walk": 5, "logged": 6}
+    active = [s for s in (c.get("streaks") or []) if s.get("current", 0) > 0]
+    if not active:
+        return None
+    active.sort(key=lambda s: (order.get(s["key"], 9), -s["current"]))
+    return active[0]
+
+
 def _hero(c) -> str:
     m = c["metrics"]
-    a = c["assessment"]
+    a = c["assessment"] or {}
+    lad = (c.get("reversal") or {}).get("ladder") or {}
 
     def mv(k):
         return (m.get(k) or {}).get("value")
 
     grade = a.get("grade")
-    score = a.get("score_pct")
     headline = a.get("headline") or "Your metabolic snapshot"
     review = (c.get("review_text") or "").strip()
-    lead = review.split(". ")[0] + "." if review else ""
+    lead = review.split(". ")[0].replace("Cross-stream associations (observational, not causal):", "").strip()
+    lead = (lead[:2].upper() + lead[2:] + ".") if lead and not lead.endswith(".") else lead
     gr = f'<div class="hero-grade grade-{_esc(grade)}">{_esc(grade or "—")}</div>' if a else ""
-    sc = (f'<div class="hero-score"><span>{_fmt(score, 0)}<small>/100</small></span>'
-          f'<div class="score-bar"><i style="width:{max(0, min(100, score or 0)):.0f}%"></i></div>'
-          f'</div>') if a else ""
-    mtb = mv("daily_metabolic_score")
-    mtb_html = (f'<div class="hero-metric"><span>{_fmt(mtb, 0)}</span>'
-                f'<label>Daily metabolic score</label></div>') if mtb is not None else ""
+
+    # The signature gauge: current GMI and how far it is from leaving the diabetic range.
+    if lad.get("ok"):
+        gmi = lad["current_gmi"]
+        prog = max(0.0, min(100.0, lad.get("overall_progress", 0) * 100.0))
+        nxt = lad.get("next")
+        cap = (f'{nxt["mean_gap"]:.0f} mg/dL lower average to reach {_esc(nxt["label"])} '
+               f'(GMI &lt;{nxt["gmi"]:g})' if nxt else 'You are in the non-diabetic range — hold it.')
+        gauge = (
+            f'<div class="hero-eyebrow">Estimated HbA1c · GMI</div>'
+            f'<div class="hero-gmi"><span class="num" data-count="{gmi:.1f}">{gmi:.1f}</span>'
+            f'<span class="hero-gmi-u">%</span></div>'
+            f'<div class="gauge" role="img" aria-label="{prog:.0f} percent from diagnosis to non-diabetic">'
+            f'<i style="--w:{prog:.0f}%"></i>'
+            f'<span class="gauge-tick" style="left:{prog:.0f}%"></span></div>'
+            f'<div class="hero-cap">{cap}</div>')
+    else:
+        score = a.get("score_pct") or 0
+        gauge = (f'<div class="hero-eyebrow">Metabolic score</div>'
+                 f'<div class="hero-gmi"><span class="num" data-count="{score:.0f}">{_fmt(score,0)}</span>'
+                 f'<span class="hero-gmi-u">/100</span></div>'
+                 f'<div class="gauge"><i style="--w:{max(0,min(100,score)):.0f}%"></i></div>')
+
+    chips = []
     tir = mv("tir_pct")
-    tir_html = (f'<div class="hero-metric"><span>{_fmt(tir, 0)}%</span>'
-                f'<label>Time in range</label></div>') if tir is not None else ""
+    if tir is not None:
+        chips.append(f'<div class="hero-metric"><span class="num">{_fmt(tir,0)}%</span>'
+                     f'<label>Time in range</label></div>')
+    mtb = mv("daily_metabolic_score")
+    if mtb is not None:
+        chips.append(f'<div class="hero-metric"><span class="num">{_fmt(mtb,0)}</span>'
+                     f'<label>Metabolic score</label></div>')
+    st = _top_streak(c)
+    if st:
+        chips.append(f'<div class="hero-metric hero-streak"><span class="num">🔥 {st["current"]}</span>'
+                     f'<label>{_esc(st["label"])}</label></div>')
+
     return (f'<div class="hero">{gr}'
-            f'<div class="hero-body"><div class="hero-headline">{_esc(headline)}</div>'
-            f'{sc}<div class="hero-metrics">{tir_html}{mtb_html}</div>'
+            f'<div class="hero-body">'
+            f'<div class="hero-headline">{_esc(headline)}</div>'
+            f'{gauge}'
+            f'<div class="hero-metrics">{"".join(chips)}</div>'
             f'{f"<p class=hero-lead>{_esc(lead)}</p>" if lead else ""}</div></div>')
 
 
@@ -780,19 +821,40 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1f2937}
 h2{margin:4px 0 14px;font-size:20px}h3.sec{margin:22px 0 10px;font-size:15px;color:#c3d0e2;
 border-left:3px solid #3987e5;padding-left:8px}
-.hero{display:flex;gap:16px;background:linear-gradient(135deg,#111725,#161d2e);border:1px solid #1f2937;
-border-radius:18px;padding:18px;margin-bottom:16px;align-items:center}
-.hero-grade{font-size:44px;font-weight:800;width:72px;height:72px;border-radius:16px;display:flex;
-align-items:center;justify-content:center;background:#0a0e16;flex:0 0 auto}
-.hero-body{flex:1}.hero-headline{font-size:17px;font-weight:600;margin-bottom:8px}
-.hero-score{display:flex;align-items:center;gap:10px;margin:6px 0}
-.hero-score span{font-size:22px;font-weight:700}.hero-score small{font-size:12px;color:#9aa8bd}
-.score-bar{flex:1;height:8px;background:#0a0e16;border-radius:6px;overflow:hidden}
-.score-bar i{display:block;height:100%;background:#199e70}
-.hero-metrics{display:flex;gap:20px;margin-top:8px}
-.hero-metric span{font-size:20px;font-weight:700}.hero-metric label{display:block;font-size:11px;color:#9aa8bd}
-.hero-lead{color:#c3d0e2;font-size:13px;margin:10px 0 0}
-.grade-A{color:#0ca30c}.grade-B{color:#199e70}.grade-C{color:#fab219}.grade-D{color:#ec835a}.grade-F{color:#d03b3b}
+.hero{display:flex;gap:18px;background:
+radial-gradient(120% 140% at 100% 0%,#17223a 0%,#0e1420 55%),linear-gradient(#0e1420,#0e1420);
+border:1px solid #24304a;border-radius:20px;padding:20px;margin-bottom:16px;align-items:flex-start;
+position:relative;overflow:hidden;animation:rise .5s ease both}
+.hero::after{content:"";position:absolute;inset:0;pointer-events:none;
+box-shadow:inset 0 1px 0 #ffffff12,inset 0 0 60px #3987e508}
+.hero-grade{font-size:46px;font-weight:600;width:76px;height:76px;border-radius:18px;display:flex;
+align-items:center;justify-content:center;background:#0a0e16;border:1px solid #24304a;flex:0 0 auto;
+line-height:1}
+.hero-body{flex:1;min-width:0}
+.hero-eyebrow{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+color:#8a99b0;margin-top:2px}
+.hero-headline{font-size:19px;font-weight:600;line-height:1.15;letter-spacing:-.01em;
+text-wrap:balance;margin:0 0 10px}
+.hero-gmi{display:flex;align-items:baseline;gap:6px;line-height:.9}
+.hero-gmi .num{font-family:var(--font-display);font-size:52px;font-weight:600;letter-spacing:-.02em;color:#eaf1fb}
+.hero-gmi-u{font-family:var(--font-mono);font-size:18px;color:#9aa8bd}
+.gauge{position:relative;height:9px;background:#0a0e16;border:1px solid #223049;border-radius:6px;
+overflow:hidden;margin:12px 0 6px}
+.gauge i{display:block;height:100%;width:var(--w);border-radius:6px;
+background:linear-gradient(90deg,#e5843f,#d9a021 45%,#2ea043);animation:fill .9s cubic-bezier(.2,.8,.2,1) both}
+.gauge-tick{position:absolute;top:-3px;width:2px;height:15px;background:#eaf1fb;border-radius:2px;transform:translateX(-1px)}
+.hero-cap{font-size:12.5px;color:#9aa8bd}
+.hero-metrics{display:flex;gap:22px;margin-top:14px;flex-wrap:wrap}
+.hero-metric .num{font-size:22px;font-weight:600}
+.hero-metric label{display:block;font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;
+text-transform:uppercase;color:#8a99b0;margin-top:2px}
+.hero-streak .num{color:#e5843f}
+.hero-lead{color:#c3d0e2;font-size:13.5px;line-height:1.5;margin:12px 0 0;
+border-top:1px solid #1e2636;padding-top:10px}
+.grade-A{color:#2ea043}.grade-B{color:#199e70}.grade-C{color:#d9a021}.grade-D{color:#e5843f}.grade-F{color:#e5484d}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes fill{from{width:0}}
+@media(prefers-reduced-motion:reduce){.hero,.gauge i{animation:none}}
 .winbar{margin-bottom:10px}.winbtn{background:#1f2937;color:#c3d0e2;border:0;margin-right:4px;
 padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#3987e5;color:#fff}
 .agp{width:100%;height:auto;background:#0b111d;border-radius:10px;margin:6px 0}
@@ -902,6 +964,16 @@ t.style.display='block';clearTimeout(window._tt);window._tt=setTimeout(function(
 document.addEventListener('click',hhTip);
 // open the tab named in the URL hash (deep-link / PWA reopen)
 (function(){var h=(location.hash||'').slice(1);if(h&&document.getElementById('tab-'+h))showTab(h);})();
+// restrained count-up on hero figures (skipped for reduced-motion)
+(function(){
+if(window.matchMedia&&matchMedia('(prefers-reduced-motion:reduce)').matches)return;
+document.querySelectorAll('[data-count]').forEach(function(el){
+  var end=parseFloat(el.getAttribute('data-count'));if(isNaN(end))return;
+  var dec=(el.getAttribute('data-count').split('.')[1]||'').length,t0=null,dur=850;
+  function step(ts){if(!t0)t0=ts;var k=Math.min(1,(ts-t0)/dur);var e=1-Math.pow(1-k,3);
+    el.textContent=(end*e).toFixed(dec);if(k<1)requestAnimationFrame(step);else el.textContent=end.toFixed(dec);}
+  el.textContent=(0).toFixed(dec);requestAnimationFrame(step);
+});})();
 """
 
 # Recompute the glucose age + freshness on the DEVICE clock, so an offline PWA never shows a
