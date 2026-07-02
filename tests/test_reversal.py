@@ -171,6 +171,30 @@ def test_self_check_no_false_alarm_on_svg_coordinate_collision():
     assert build_dashboard.self_check(cockpit) == []
 
 
+def test_labs_ingest_from_csv_source(st):
+    csv_text = ("date,marker,value,unit,ref_high\n"
+                "2026-05-01,ALT,92,U/L,40\n"
+                "2026-06-30,ALT,78,U/L,40\n"
+                "2026-06-30,hs-CRP,6.2,mg/L,3\n")
+    with freeze_time(NOW):
+        res = labs.ingest(st, labs.CsvLabsSource(text=csv_text), now=NOW)
+        p = labs.panel(st, now=NOW)
+    assert res.n_stored == 3
+    assert p["markers"]["alt"]["value"] == 78 and p["markers"]["alt"]["n"] == 2
+    assert p["markers"]["alt"]["delta"] == pytest.approx(-14.0)   # 78 - 92
+    assert p["markers"]["hs_crp"]["status"] == "critical"
+    assert labs.self_check(p) == []
+
+
+def test_labs_parse_skips_incomplete_rows():
+    rows = [{"date": "2026-06-30", "marker": "ALT", "value": ""},   # no value -> skip
+            {"date": "", "marker": "AST", "value": "40"},           # no date -> skip
+            {"date": "2026-06-30", "marker": "GGT", "value": "61", "unit": "U/L"}]
+    out = labs.parse_rows(rows)
+    assert len(out) == 1 and out[0]["marker"] == "GGT"
+    assert out[0]["measured_at"] == "2026-06-30T09:00:00+04:00"
+
+
 def test_self_check_flags_quarantined_value_in_header():
     cockpit = build_dashboard.build_cockpit(
         metrics={}, trend_by_window={},

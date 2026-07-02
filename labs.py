@@ -166,6 +166,76 @@ def _age_str(delta) -> str:
     return f"{days / 30:.0f}mo"
 
 
+def parse_rows(rows: list[dict]) -> list[dict]:
+    """Normalize hand-entered lab rows into events. Accepts columns: date (or measured_at),
+    marker (or test), value (or result), unit, ref_high, ref_low, [time], [key]. Rows without a
+    date/marker/value are skipped. Timestamps are made tz-aware in Asia/Dubai (labs are dated,
+    not timed) so they pass the integrity freshness gate."""
+    out = []
+    for raw in rows:
+        d = (raw.get("date") or raw.get("measured_at") or "").strip() if isinstance(
+            raw.get("date") or raw.get("measured_at"), str) else (raw.get("date") or raw.get("measured_at"))
+        marker = raw.get("marker") or raw.get("test") or raw.get("name")
+        val = _num(raw.get("value") if raw.get("value") not in (None, "") else raw.get("result"))
+        if not d or not marker or val is None:
+            continue
+        ds = str(d)[:10]
+        t = (str(raw.get("time")).strip() if raw.get("time") else "") or "09:00"
+        if len(t) == 5:          # HH:MM -> add seconds
+            t = t + ":00"
+        elif len(t) != 8:        # anything unexpected -> a stable default
+            t = "09:00:00"
+        ts = f"{ds}T{t}+04:00"   # labs are dated, not timed; Asia/Dubai so freshness passes
+        out.append({"key": str(raw.get("key") or f"{marker}-{ds}"), "measured_at": ts,
+                    "marker": str(marker), "value": val, "unit": raw.get("unit") or "",
+                    "ref_high": _num(raw.get("ref_high")), "ref_low": _num(raw.get("ref_low"))})
+    return out
+
+
+class CsvLabsSource:
+    """Read labs from CSV text or a file path (columns per :func:`parse_rows`)."""
+
+    name = "csv-labs"
+
+    def __init__(self, *, text: str | None = None, path: str | None = None):
+        if text is None and path is None:
+            raise ValueError("provide text= or path=")
+        self._text, self._path = text, path
+
+    def read(self) -> list[dict]:
+        import csv
+        import io
+        if self._text is not None:
+            return parse_rows(list(csv.DictReader(io.StringIO(self._text))))
+        with open(self._path, encoding="utf-8") as fh:
+            return parse_rows(list(csv.DictReader(fh)))
+
+
+class GSheetLabsSource:
+    """Read a labs tab from a Google Sheet via gspread + a service account (lazy import)."""
+
+    name = "gsheet-labs"
+
+    def __init__(self, sheet_id: str, *, worksheet: str = "labs",
+                 service_account_path: str | None = None):
+        self.sheet_id, self.worksheet = sheet_id, worksheet
+        self.service_account_path = service_account_path
+
+    def read(self) -> list[dict]:
+        import gspread  # lazy: only needed for live reads
+        gc = (gspread.service_account(filename=self.service_account_path)
+              if self.service_account_path else gspread.service_account())
+        ws = gc.open_by_key(self.sheet_id).worksheet(self.worksheet)
+        return parse_rows(ws.get_all_records())
+
+
+def ingest(store, source, *, now=None):
+    """Read *source* and upsert its lab records into the store's ``labs`` stream (idempotent)."""
+    now = integrity.now_utc() if now is None else now
+    return store.append_events("labs", source.read(), key_field="key",
+                               ts_field="measured_at", now=now)
+
+
 def panel(store, *, now=None) -> dict:
     """Latest value + status + trend for every entered lab marker, grouped by system.
 

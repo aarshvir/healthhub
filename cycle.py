@@ -18,6 +18,7 @@ import engine
 import glucose as glucose_mod
 import integrity
 import journal
+import labs as labs_mod
 import store as store_mod
 import wearables
 
@@ -53,6 +54,13 @@ def build_wearables_source():
     return None
 
 
+def build_labs_source():
+    if config.sheets_configured() and config.is_set("LABS_SHEET_ID"):
+        return labs_mod.GSheetLabsSource(config.get("LABS_SHEET_ID"),
+                                         service_account_path=config.google_sa_path())
+    return None
+
+
 def run(*, out_dir: str = "publish", db_path: str | None = None, window_days: int = 14,
         subject: str = "patient", walk_adherence: float | None = None, now=None):
     """Run one cycle and leak-scan the output. Returns (CycleResult, mode)."""
@@ -61,7 +69,8 @@ def run(*, out_dir: str = "publish", db_path: str | None = None, window_days: in
     gsrc, mode = build_glucose_source(now=now)
     result = engine.run_cycle(
         store=st, glucose_source=gsrc, log_source=build_log_source(),
-        wearables_source=build_wearables_source(), now=now, window_days=window_days,
+        wearables_source=build_wearables_source(), labs_source=build_labs_source(),
+        now=now, window_days=window_days,
         subject=subject, walk_adherence=walk_adherence, out_dir=out_dir,
         dashboard=True, excel=True)
     # leak gate: refuse to publish if any secret value reached an artifact (§A)

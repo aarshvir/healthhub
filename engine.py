@@ -86,6 +86,7 @@ def _write_json(obj, path: str) -> None:
 
 
 def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=None,
+              labs_source=None,
               now=None, window_days: int = 14, subject: str = "patient",
               walk_adherence: float | None = None, out_dir: str = ".",
               prune_retention: int = 500, dashboard: bool = False, excel: bool = False,
@@ -107,6 +108,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
                                     sleep=sleep).n_stored
     if log_source is not None:
         journal.ingest(store, log_source, now=now)
+    if labs_source is not None:
+        labs_mod.ingest(store, labs_source, now=now)
     store.prune(now=now, retention_days=prune_retention)
 
     # Wearables + the unified daily frame are built FIRST so downstream stages can use them:
