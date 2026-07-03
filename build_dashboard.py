@@ -585,7 +585,38 @@ def _labs_html(labs) -> str:
     for group, markers in groups.items():
         rows = "".join(_lab_row(m) for m in markers)
         out.append(f'<div class="lab-group"><div class="lg-title">{_esc(group)}</div>{rows}</div>')
+    derived = labs.get("derived") or []
+    if derived:
+        chips = "".join(
+            f'<div class="ins-card"><div class="ins-title">{_esc(d["name"])} '
+            f'<span style="color:{STATUS_COLORS.get(d["status"], "#8a99b0")}">●</span></div>'
+            f'<div class="ins-big num">{d["value"]:g}{_esc(d.get("unit") or "")}</div>'
+            f'<div class="ins-detail">{_esc(d.get("note"))}</div></div>' for d in derived)
+        out.append('<h3 class="sec">Derived liver scores</h3>'
+                   f'<div class="insight-grid">{chips}</div>')
     return "".join(out)
+
+
+def _weight_html(w) -> str:
+    if not w or not w.get("ok"):
+        return ""
+    bmi = f' · BMI {w["bmi"]:g}' if w.get("bmi") is not None else ""
+    return (f'<h3 class="sec">Weight — your strongest lever</h3>'
+            f'<div class="rev-hero"><div class="rev-gmi"><span class="num">{w["kg_lost"]:+.1f}</span>'
+            f'<label>kg from baseline ({w["baseline_kg"]:g} → {w["current_kg"]:g} kg{bmi})</label></div>'
+            f'<div class="rev-prog"><div class="score-bar big">'
+            f'<i style="width:{min(100, w["remission_band_pct"]):.0f}%;background:#199e70"></i></div>'
+            f'<div class="muted">DiRECT remission likelihood at this loss ≈ '
+            f'<b>{w["remission_band_pct"]}%</b> · {_esc(w["note"])}</div></div></div>')
+
+
+def _reconcile_html(rc) -> str:
+    if not rc or not rc.get("ok"):
+        return ""
+    cls = "bad" if rc.get("discordant") else "good"
+    return (f'<div class="proj {cls}"><div class="proj-main">CGM estimate (GMI '
+            f'<b>{rc["gmi_pct"]:.1f}%</b>) vs lab HbA1c (<b>{rc["lab_hba1c_pct"]:.1f}%</b>) — '
+            f'gap {rc["gap_pct"]:+.1f}%</div><div class="muted">{_esc(rc["note"])}</div></div>')
 
 
 def _reversal_tab(c) -> str:
@@ -596,6 +627,8 @@ def _reversal_tab(c) -> str:
                 'lab panel) are flowing — it shows your GMI remission ladder, a 90-day projection, '
                 'your liver/inflammation/hormone labs, and the short list for your doctor.</p>')
     parts = ['<h3 class="sec">Remission ladder</h3>', _ladder_html(rev.get("ladder", {})),
+             _reconcile_html(rev.get("reconcile", {})),
+             _weight_html(rev.get("weight", {})),
              '<h3 class="sec">90-day GMI projection</h3>', _projection_html(rev.get("projection", {})),
              _doctor_html(rev.get("doctor_list", [])), _labs_html(labs)]
     return "".join(parts)

@@ -31,7 +31,8 @@ def _lt(v, t):
 
 # (key, friendly label, one-line meaning, predicate over a daily-frame row)
 STREAK_DEFS = (
-    ("remission", "Non-diabetic days", "daily average glucose below the diabetic range",
+    ("remission", "GMI-target days", "daily average below the GMI 6.5 threshold (a proxy — "
+     "sustained clinical remission is a separate, 3-month bar)",
      lambda r: _lt(r.get("mean_mgdl"), REMISSION_MEAN)),
     ("titr", "Tight-range days", "≥50% of the day between 70–140 mg/dL",
      lambda r: _ge(r.get("titr_pct"), 50.0)),

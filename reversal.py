@@ -192,6 +192,33 @@ def reconcile(metrics=None, labs_panel=None) -> dict:
             "gap_pct": round(gap, 2), "discordant": abs(gap) >= 0.5, "note": note}
 
 
+# DiRECT trial remission likelihood by weight lost from baseline (Lean 2018)
+_DIRECT_BANDS = ((15.0, 86), (10.0, 57), (5.0, 34), (0.0, 7))
+
+
+def weight_view(frame, *, labs_panel=None) -> dict:
+    """Weight loss from baseline + a DiRECT-anchored remission-likelihood band.
+
+    Weight is the strongest reversal lever for this profile, so it sits beside the GMI ladder as
+    a co-primary. Baseline = the earliest logged weight in the window; the band is the DiRECT
+    trial's observed remission rate at that amount of loss (observational, framed as odds).
+    """
+    ws = [(r["date"], r["weight_kg"]) for r in (frame or []) if r.get("weight_kg") is not None]
+    if len(ws) < 2:
+        return {"ok": False}
+    baseline = ws[0][1]
+    current = ws[-1][1]
+    kg_lost = baseline - current
+    pct = (kg_lost / baseline * 100.0) if baseline else 0.0
+    band_pct = next((p for thr, p in _DIRECT_BANDS if kg_lost >= thr), 7)
+    bmi = (((labs_panel or {}).get("markers", {}) or {}).get("bmi") or {}).get("value")
+    return {"ok": True, "baseline_kg": round(baseline, 1), "current_kg": round(current, 1),
+            "kg_lost": round(kg_lost, 1), "pct_lost": round(pct, 1),
+            "remission_band_pct": band_pct, "bmi": bmi,
+            "note": (f"At {kg_lost:.1f} kg lost, the DiRECT trial saw ~{band_pct}% reach remission."
+                     if kg_lost >= 0.5 else "Logging weight regularly powers this estimate.")}
+
+
 def build(frame, *, metrics=None, labs_panel=None, horizon_days: int = 90) -> dict:
     """Assemble the full reversal view: ladder + projection + reconciliation + doctor list."""
     current_mean = None
@@ -207,6 +234,7 @@ def build(frame, *, metrics=None, labs_panel=None, horizon_days: int = 90) -> di
         "ladder": ladder(current_mean),
         "projection": project(frame or [], horizon_days=horizon_days),
         "reconcile": reconcile(metrics=metrics, labs_panel=labs_panel),
+        "weight": weight_view(frame or [], labs_panel=labs_panel),
         "doctor_list": doctor_list(labs_panel=labs_panel, metrics=metrics),
     }
 

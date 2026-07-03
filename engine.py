@@ -94,7 +94,7 @@ def _write_json(obj, path: str) -> None:
 
 def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=None,
               labs_source=None,
-              now=None, window_days: int = 14, subject: str = "patient",
+              now=None, window_days: int = 14, subject: str = "patient", subject_age=None,
               walk_adherence: float | None = None, out_dir: str = ".",
               prune_retention: int = 500, dashboard: bool = False, excel: bool = False,
               dashboard_windows=analytics.STANDARD_WINDOWS,
@@ -157,7 +157,7 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
 
     # labs (liver/inflammation/hormones/…) + the diabetes-reversal view (GMI ladder, 90-day
     # projection, doctor-ready list) — the non-glucose half of the mission.
-    labs_panel = labs_mod.panel(store, now=now)
+    labs_panel = labs_mod.panel(store, now=now, age=subject_age)
     reversal_view = reversal_mod.build(daily_frame, metrics=metrics, labs_panel=labs_panel)
     violations += labs_mod.self_check(labs_panel) + reversal_mod.self_check(reversal_view)
 

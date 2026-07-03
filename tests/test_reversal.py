@@ -221,3 +221,25 @@ def test_reconcile_glycation_gap():
                            labs_panel={"markers": {"hba1c": {"value": 6.2}}})
     assert r["ok"] and r["gap_pct"] == pytest.approx(0.7) and r["discordant"] is True
     assert reversal.reconcile(metrics={}, labs_panel={})["ok"] is False
+
+
+def test_weight_view_direct_bands():
+    frame = [{"date": f"2026-05-{d:02d}", "weight_kg": w}
+             for d, w in [(1, 126.0), (10, 122.0), (20, 118.0), (30, 114.0)]]  # 12 kg lost
+    w = reversal.weight_view(frame)
+    assert w["ok"] and w["kg_lost"] == pytest.approx(12.0)
+    assert w["remission_band_pct"] == 57      # 10–15 kg band
+    assert w["pct_lost"] == pytest.approx(9.5, abs=0.1)
+    assert reversal.weight_view([{"date": "2026-05-01", "weight_kg": 100}])["ok"] is False
+
+
+def test_hepatic_scores_de_ritis_and_fib4():
+    markers = {"alt": {"value": 85}, "ast": {"value": 47}, "platelets": {"value": 220}}
+    d0 = labs.hepatic_scores(markers)                     # no age -> De Ritis only
+    assert [x["key"] for x in d0] == ["de_ritis"]
+    assert d0[0]["value"] == pytest.approx(0.55, abs=0.01)
+    d1 = labs.hepatic_scores(markers, age=35)             # + age + platelets -> FIB-4
+    keys = {x["key"] for x in d1}
+    assert keys == {"de_ritis", "fib4"}
+    fib4 = next(x for x in d1 if x["key"] == "fib4")
+    assert fib4["value"] == pytest.approx((35 * 47) / (220 * (85 ** 0.5)), abs=0.01)
