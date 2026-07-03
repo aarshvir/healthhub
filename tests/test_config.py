@@ -44,3 +44,32 @@ def test_secret_values_excludes_unset(env):
     assert config.secret_values() == []
     env.setenv("TELEGRAM_TOKEN", "abcd1234")
     assert "abcd1234" in config.secret_values()
+
+
+def test_leak_gate_scans_inside_xlsx(env, tmp_path):
+    import zipfile
+    env.setenv("NS_TOKEN", "super-secret-token-1234")
+    # a zip (like the shipped .xlsx) hiding the secret in one entry must NOT slip past
+    xlsx = tmp_path / "book.xlsx"
+    with zipfile.ZipFile(xlsx, "w") as z:
+        z.writestr("xl/worksheets/sheet1.xml", "<c>super-secret-token-1234</c>")
+    with pytest.raises(RuntimeError):
+        config.scan_paths([str(xlsx)], where="publish")
+
+
+def test_leak_gate_catches_service_account_subfield(env, tmp_path):
+    import json
+    env.setenv("GOOGLE_SA_JSON", json.dumps({
+        "private_key": "-----BEGIN PRIVATE KEY-----AAAABBBBCCCC-----END-----",
+        "client_email": "robot@proj.iam.gserviceaccount.com"}))
+    f = tmp_path / "leak.json"
+    f.write_text('{"who":"robot@proj.iam.gserviceaccount.com"}')   # sub-field, not whole blob
+    with pytest.raises(RuntimeError):
+        config.scan_paths([str(f)])
+
+
+def test_leak_gate_passes_clean_files(env, tmp_path):
+    env.setenv("NS_TOKEN", "super-secret-token-1234")
+    f = tmp_path / "ok.json"
+    f.write_text('{"glucose": 120, "note": "nothing secret here"}')
+    assert config.scan_paths([str(f)]) == [str(f)]

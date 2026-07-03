@@ -88,8 +88,12 @@ def _metrics_self_check(metrics: dict) -> list[str]:
 
 
 def _write_json(obj, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as fh:
+    # atomic: write to a temp file and rename into place, so a crash mid-write can never leave
+    # a half-written (invalid) artifact that the dashboard/Excel would then disagree with.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, indent=2, sort_keys=True, default=str)
+    os.replace(tmp, path)
 
 
 def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=None,
@@ -242,8 +246,10 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             patterns=patterns_view, coach=coach_moves, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
-            artifacts["dashboard"] = build_dashboard.write_dashboard(
-                build_dashboard.render(cockpit), os.path.join(out_dir, "dashboard.html"))
+            dash_path = os.path.join(out_dir, "dashboard.html")
+            build_dashboard.write_dashboard(build_dashboard.render(cockpit), dash_path + ".tmp")
+            os.replace(dash_path + ".tmp", dash_path)   # atomic — never serve a half-written page
+            artifacts["dashboard"] = dash_path
 
     # the 500-day Excel workbook, from the SAME store (§D rule 7) — co-published so the
     # dashboard's Export button resolves to a matching file
@@ -252,7 +258,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
                                          window_days=500)
         violations += export_excel.self_check(store, wb)
         excel_path = os.path.join(out_dir, "HealthOS_500d.xlsx")
-        wb.save(excel_path)
+        wb.save(excel_path + ".tmp")
+        os.replace(excel_path + ".tmp", excel_path)     # atomic
         artifacts["excel"] = excel_path
 
     return CycleResult(
