@@ -831,17 +831,6 @@ def _food_tab(c) -> str:
             '<div class="frows">' + "".join(cards) + "</div>")
 
 
-def _food_tab_old(c) -> str:
-    if not c["food_ranking"]:
-        return "<p>No foods with n≥3 yet.</p>"
-    rows = "".join(
-        f"<tr><td>{_esc(f['item'])}</td><td>{_fmt(f.get('mean_delta_peak_mgdl'),0)}</td>"
-        f"<td>{_fmt(f.get('mean_iauc_120'),0)}</td><td>{_esc(f.get('n'))}</td></tr>"
-        for f in c["food_ranking"])
-    return ('<table><thead><tr><th>Food</th><th>Δpeak (mg/dL)</th><th>iAUC</th>'
-            f'<th>n</th></tr></thead><tbody>{rows}</tbody></table>')
-
-
 def _experiments_tab(c) -> str:
     exps = c["experiments"]
     if not exps:
