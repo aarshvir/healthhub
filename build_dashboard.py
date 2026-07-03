@@ -769,7 +769,36 @@ def _analytics_tab(c) -> str:
     return f'<div class="winbar">{buttons}</div>' + "".join(panels)
 
 
+def _empty(title, body) -> str:
+    """A designed empty state (ghost card), not a stranded line of gray text."""
+    return (f'<div class="empty"><div class="empty-glyph">◒</div>'
+            f'<div class="empty-title">{_esc(title)}</div>'
+            f'<div class="empty-body">{_esc(body)}</div></div>')
+
+
 def _food_tab(c) -> str:
+    foods = c["food_ranking"]
+    if not foods:
+        return _empty("No foods ranked yet",
+                      "Log a few meals with net carbs and a tag. Once a food has 3+ logged "
+                      "meals, its glucose impact (peak rise, iAUC, time-to-peak) appears here, "
+                      "worst-to-best.")
+    mx = max((abs(f.get("mean_delta_peak_mgdl") or 0) for f in foods), default=1) or 1
+    cards = []
+    for f in foods:
+        dp = f.get("mean_delta_peak_mgdl")
+        col = _level_color((dp or 0) + 90)   # map Δpeak onto the green/amber/red scale
+        cards.append(
+            f'<div class="frow"><div class="frow-top"><span class="frow-name">{_esc(f["item"])}</span>'
+            f'<span class="frow-dp num">+{_fmt(dp,0)}<small> mg/dL</small></span></div>'
+            f'<div class="frow-bar"><i style="width:{100*abs(dp or 0)/mx:.0f}%;background:{col}"></i></div>'
+            f'<div class="frow-foot">iAUC {_fmt(f.get("mean_iauc_120"),0)} · '
+            f'{_esc(f.get("n"))} meals</div></div>')
+    return ('<p class="muted">Your foods ranked by average glucose peak — worst first.</p>'
+            '<div class="frows">' + "".join(cards) + "</div>")
+
+
+def _food_tab_old(c) -> str:
     if not c["food_ranking"]:
         return "<p>No foods with n≥3 yet.</p>"
     rows = "".join(
@@ -781,15 +810,28 @@ def _food_tab(c) -> str:
 
 
 def _experiments_tab(c) -> str:
-    if not c["experiments"]:
-        return "<p>No interventions logged.</p>"
-    rows = "".join(
-        f"<tr><td>{_esc(e['tag'])}</td><td>{_fmt(e.get('effect_abs'),0)}</td>"
-        f"<td>{_fmt(e.get('effect_pct'),0)}%</td><td>{_esc(e.get('n_treated'))}/"
-        f"{_esc(e.get('n_control'))}</td><td>{_esc(e.get('signal_strength'))}</td>"
-        f"<td>{_esc(e.get('causal_label'))}</td></tr>" for e in c["experiments"])
-    return ('<table><thead><tr><th>Tag</th><th>Effect</th><th>%</th><th>n T/C</th>'
-            f'<th>signal</th><th>causal?</th></tr></thead><tbody>{rows}</tbody></table>')
+    exps = c["experiments"]
+    if not exps:
+        return _empty("No interventions compared yet",
+                      "Tag meals with what you tried (+walk, +acv, +methi, veg-first…). The "
+                      "engine matches tagged vs untagged meals and reports the effect with its "
+                      "sample size — never labelling anything causal below the evidence floor.")
+    cards = []
+    for e in exps:
+        eff = e.get("effect_abs")
+        good = eff is not None and eff < 0
+        sign = "good" if good else ("bad" if (eff or 0) > 0 else "")
+        cards.append(
+            f'<div class="frow"><div class="frow-top">'
+            f'<span class="frow-name">{_esc(e["tag"])}</span>'
+            f'<span class="frow-dp num {sign}">{_fmt(eff,0)}<small> mg/dL '
+            f'({_fmt(e.get("effect_pct"),0)}%)</small></span></div>'
+            f'<div class="frow-foot"><span class="pill">{_esc(e.get("signal_strength"))}</span> '
+            f'<span class="pill">{_esc(e.get("causal_label"))}</span> '
+            f'n {_esc(e.get("n_treated"))} vs {_esc(e.get("n_control"))}</div></div>')
+    return ('<p class="muted">Matched-meal interventions (tagged vs untagged) — negative = '
+            'blunts the peak. Never called causal below the evidence floor.</p>'
+            '<div class="frows">' + "".join(cards) + "</div>")
 
 
 def _custom_card(card) -> str:
@@ -910,6 +952,17 @@ border:1px solid #334155;border-radius:8px;padding:6px 9px;font-size:12px;pointe
 main{padding:16px;max-width:1100px;margin:0 auto}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
 .tile{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:12px}
+/* elevation/light model: top-lit gradient surfaces + ambient depth so cards float */
+.tile,.spark-card,.ins-card,.corr-card,.card,.lab-group,.moves,.proj,.doc-item,.rung,.ins-card{
+background-image:linear-gradient(180deg,#161d2e 0%,#111725 60%);
+box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 1px 2px rgba(0,0,0,.35),0 10px 26px rgba(0,0,0,.20)}
+.tile,.corr-card,nav button,.winbtn,.refresh,.xbtn{transition:transform .14s ease,
+background-color .14s ease,border-color .14s ease,box-shadow .14s ease}
+.tile:active,.corr-card:active{transform:scale(.992)}
+nav button:hover,.winbtn:hover{background-color:#26324a}
+.tab.active{animation:fadein .22s ease both}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 .t-title{font-size:12px;color:#9aa8bd}.t-value{font-size:24px;font-weight:700;margin:4px 0}
 .t-sub{font-size:12px;color:#c3d0e2}.t-foot{font-size:12px;color:#8091a7;margin-top:6px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1f2937}
@@ -980,12 +1033,14 @@ pre{white-space:pre-wrap;background:#0b111d;padding:8px;border-radius:8px}
 .heatwrap{position:relative;overflow-x:auto;padding-bottom:4px}
 .heatwrap::after{content:"";position:absolute;top:0;right:0;width:22px;height:100%;
 background:linear-gradient(90deg,transparent,#0a0e16);pointer-events:none}
-.heatmap{display:grid;grid-template-columns:84px repeat(var(--n),minmax(26px,1fr));gap:2px;min-width:min-content}
-.hm-row{display:contents}.hm-cell{aspect-ratio:1;display:flex;align-items:center;justify-content:center;
-font-size:11px;color:#eef2f9;border-radius:3px;min-width:26px;cursor:pointer}
-.hm-corner{background:transparent}
-.hm-col{background:transparent;color:#9aa8bd;font-size:10px;aspect-ratio:auto;align-items:flex-end;
-white-space:nowrap;line-height:1.05}
+.heatmap{display:grid;grid-template-columns:92px repeat(var(--n),minmax(30px,1fr));gap:3px;min-width:min-content}
+.hm-row{display:contents}
+.hm-cell{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:11px;
+color:#eef2f9;border-radius:4px;min-width:30px;cursor:pointer;font-variant-numeric:tabular-nums;
+box-shadow:inset 0 0 0 1px rgba(255,255,255,.03)}
+.hm-corner{background:transparent;box-shadow:none}
+.hm-col{background:transparent;color:#9aa8bd;font-size:11px;aspect-ratio:auto;align-items:flex-end;
+white-space:nowrap;line-height:1.05;box-shadow:none}
 .hm-rowlbl{background:transparent;color:#c3d0e2;justify-content:flex-end;padding-right:6px;font-size:11px;
 aspect-ratio:auto;white-space:nowrap}
 .hm-legend{display:flex;align-items:center;gap:8px;margin-top:10px;color:#9aa8bd;font-size:12px}
@@ -1025,6 +1080,20 @@ color:#eaf1fb;background:#16233b;border:1px solid #263a5c;border-radius:8px;padd
 .tod-bar{flex:1;height:14px;background:#0a0e16;border:1px solid #1e2636;border-radius:7px;overflow:hidden}
 .tod-bar i{display:block;height:100%;border-radius:7px}
 .tod-val{flex:0 0 84px;text-align:right;font-family:var(--font-mono);font-weight:600}
+.frows{display:flex;flex-direction:column;gap:10px}
+.frow{background-image:linear-gradient(180deg,#161d2e,#111725);border:1px solid #1f2937;
+border-radius:12px;padding:11px 13px}
+.frow-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.frow-name{font-weight:600;font-size:14.5px}
+.frow-dp{font-family:var(--font-mono);font-weight:600}.frow-dp small{color:#8a99b0;font-weight:400}
+.frow-dp.good{color:#5bd47e}.frow-dp.bad{color:#f0a072}
+.frow-bar{height:8px;background:#0a0e16;border:1px solid #1e2636;border-radius:5px;overflow:hidden;margin:8px 0 6px}
+.frow-bar i{display:block;height:100%;border-radius:5px}
+.frow-foot{font-family:var(--font-mono);font-size:11.5px;color:#8a99b0;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.empty{text-align:center;border:1.5px dashed #2a3654;border-radius:16px;padding:34px 22px;background:#0d1320}
+.empty-glyph{font-size:34px;color:#3b4a68;line-height:1}
+.empty-title{font-family:var(--font-display);font-size:18px;margin:10px 0 6px}
+.empty-body{color:#9aa8bd;font-size:13.5px;line-height:1.55;max-width:44ch;margin:0 auto}
 .insight-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
 .ins-card{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:14px}
 .ins-title{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a99b0}
@@ -1060,13 +1129,28 @@ border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex
 """
 
 _JS = """
-function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+var HH_SCROLL={};
+function showTab(name,fromNav){
+var cur=document.querySelector('.tab.active');if(cur)HH_SCROLL[cur.id]=window.scrollY;
+document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
 var sec=document.getElementById('tab-'+name);if(!sec)return;sec.classList.add('active');
 document.querySelectorAll('nav button').forEach(function(b){b.classList.remove('active');
-b.setAttribute('aria-selected','false');});
+b.setAttribute('aria-selected','false');b.tabIndex=-1;});
 var nb=document.getElementById('navbtn-'+name);if(nb){nb.classList.add('active');
-nb.setAttribute('aria-selected','true');nb.scrollIntoView({block:'nearest',inline:'center'});}
-if(history.replaceState)history.replaceState(null,'','#'+name);window.scrollTo(0,0);}
+nb.setAttribute('aria-selected','true');nb.tabIndex=0;nb.scrollIntoView({block:'nearest',inline:'center'});}
+// user taps push history (Back returns to the previous tab); programmatic opens replace
+if(fromNav&&history.pushState)history.pushState({tab:name},'','#'+name);
+else if(history.replaceState)history.replaceState({tab:name},'','#'+name);
+window.scrollTo(0,HH_SCROLL['tab-'+name]||0);}
+window.addEventListener('popstate',function(e){var n=(e.state&&e.state.tab)||(location.hash||'').slice(1);
+if(n&&document.getElementById('tab-'+n))showTab(n);});
+// keyboard: arrow-key roving focus across the tablist (WAI-ARIA tabs pattern)
+document.addEventListener('keydown',function(e){
+if(!e.target.matches('nav button'))return;var btns=[].slice.call(document.querySelectorAll('nav button'));
+var i=btns.indexOf(e.target),j=i;
+if(e.key==='ArrowRight')j=(i+1)%btns.length;else if(e.key==='ArrowLeft')j=(i-1+btns.length)%btns.length;
+else if(e.key==='Home')j=0;else if(e.key==='End')j=btns.length-1;else return;
+e.preventDefault();btns[j].focus();btns[j].click();});
 function showWindow(w){document.querySelectorAll('.winpanel').forEach(p=>p.style.display='none');
 var el=document.getElementById('winpanel-'+w);if(el)el.style.display='block';
 document.querySelectorAll('.winbtn').forEach(b=>b.classList.remove('active'));
@@ -1154,9 +1238,11 @@ def render(cockpit: dict) -> str:
     }
     nav = "".join(f'<button id="navbtn-{t}" role="tab" '
                   f'aria-selected="{"true" if i==0 else "false"}" '
+                  f'aria-controls="tab-{t}" tabindex="{"0" if i==0 else "-1"}" '
                   f'class="{"active" if i==0 else ""}" '
-                  f'onclick="showTab(\'{t}\')">{t}</button>' for i, t in enumerate(TABS))
-    tabs = "".join(f'<section id="tab-{t}" role="tabpanel" class="tab {"active" if i==0 else ""}">'
+                  f'onclick="showTab(\'{t}\',1)">{t}</button>' for i, t in enumerate(TABS))
+    tabs = "".join(f'<section id="tab-{t}" role="tabpanel" aria-labelledby="navbtn-{t}" '
+                   f'tabindex="0" class="tab {"active" if i==0 else ""}">'
                    f'<h2>{t}</h2>{bodies[t]}</section>' for i, t in enumerate(TABS))
     # CSP is a load-bearing control, not a claim: everything is inlined/same-origin, so lock the
     # page to its own origin + data-URI fonts and forbid any external fetch. (§A: no external hosts.)
