@@ -10,6 +10,7 @@
 const CACHE = 'healthhub-v2';
 const ASSETS = [
   'dashboard.html', 'index.html', 'manifest.json',
+  'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
   'metrics.json', 'trend.json', 'wearables.json',
   'correlation.json', 'labs.json', 'reversal.json', 'health.json'
 ];

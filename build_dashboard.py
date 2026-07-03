@@ -27,8 +27,8 @@ import correlate
 import daily
 import integrity
 
-TABS = ("Today", "Reversal", "Trends", "Correlations", "Analytics", "Food", "Experiments",
-        "Custom", "Review", "Export")
+TABS = ("Today", "Reversal", "Trends", "Patterns", "Correlations", "Analytics", "Food",
+        "Experiments", "Custom", "Review", "Export")
 # reserved status palette (dataviz): state colours, never reused for a data series
 STATUS_COLORS = {"good": "#0ca30c", "warning": "#fab219", "critical": "#d03b3b",
                  "unknown": "#8091a7"}
@@ -632,6 +632,77 @@ def _corr_card(f) -> str:
             f'<span class="corr-n">{_esc(f.get("detail"))}</span></div></div></div>')
 
 
+def _level_color(v):
+    """Glucose level -> in-range green / high amber / very-high red (for daypart bars)."""
+    if v is None:
+        return "#334155"
+    if v <= 140:
+        return "#2ea043"
+    if v <= 180:
+        return "#d9a021"
+    return "#e5484d"
+
+
+def _patterns_tab(c) -> str:
+    p = c.get("patterns") or {}
+    tod, dawn, wk, tr = (p.get("time_of_day") or {}), (p.get("dawn") or {}), \
+        (p.get("weekday") or {}), (p.get("trend") or {})
+    if not tod.get("parts") and not tr.get("ok"):
+        return ('<p class="muted">Patterns emerge once a couple of weeks of glucose are in. '
+                'They show when your day runs high, whether dawn is driving the morning, and the '
+                'week your control turned.</p>')
+    out = []
+    # trend banner — the single most motivating pattern
+    if tr.get("ok"):
+        dirn = tr["direction"]
+        cls = {"improving": "good", "worsening": "bad", "flat": ""}.get(dirn, "")
+        arrow = {"improving": "↓", "worsening": "↑", "flat": "→"}.get(dirn, "→")
+        drop = (f' The biggest single-week improvement was the week of {_esc(tr["biggest_drop_week"])} '
+                f'({tr["biggest_weekly_drop_mgdl"]:+.0f} mg/dL).' if tr.get("biggest_drop_week") else "")
+        out.append(
+            f'<div class="proj {cls}"><div class="proj-main">{arrow} Average glucose is '
+            f'<b>{dirn}</b> — {tr["overall_change_mgdl"]:+.0f} mg/dL over {tr["n_weeks"]} weeks.</div>'
+            f'<div class="muted">{drop.strip() or "Keep the streak going."}</div></div>')
+    # time-of-day bars (typical day)
+    parts = tod.get("parts") or []
+    if parts:
+        mx = max((p2["median_mgdl"] for p2 in parts), default=1) or 1
+        worst = (tod.get("worst") or {}).get("window")
+        rows = "".join(
+            f'<div class="tod-row"><span class="tod-lbl">{_esc(p2["window"])}'
+            f'<small>{_esc(p2["hours"])}</small></span>'
+            f'<span class="tod-bar"><i style="width:{100*p2["median_mgdl"]/mx:.0f}%;'
+            f'background:{_level_color(p2["median_mgdl"])}"></i></span>'
+            f'<span class="tod-val">{p2["median_mgdl"]:.0f}'
+            f'{" ◂ worst" if p2["window"] == worst else ""}</span></div>' for p2 in parts)
+        out.append('<h3 class="sec">Your typical day</h3>'
+                   '<p class="muted">Median glucose by part of day (Asia/Dubai).</p>'
+                   f'<div class="tod">{rows}</div>')
+    # dawn + weekday insight cards
+    cards = []
+    if dawn.get("delta_mgdl") is not None:
+        d = dawn["delta_mgdl"]
+        verdict = ("a clear dawn phenomenon" if dawn.get("present")
+                   else "little dawn effect")
+        cards.append(_insight_card("Dawn effect", f"{d:+.0f} mg/dL",
+                     f"04:00–08:00 runs {d:+.0f} vs the small hours — {verdict}."))
+    if wk.get("ok"):
+        wm = wk.get("weekend_minus_weekday")
+        hi, lo = wk.get("highest", {}), wk.get("lowest", {})
+        detail = (f'Weekends run {wm:+.0f} mg/dL vs weekdays. ' if wm is not None else "")
+        detail += f'Highest {hi.get("day")} ({hi.get("mean_mgdl"):.0f}), lowest {lo.get("day")} ({lo.get("mean_mgdl"):.0f}).'
+        cards.append(_insight_card("Day of week", (f"{wm:+.0f} mg/dL" if wm is not None else hi.get("day", "—")), detail))
+    if cards:
+        out.append('<h3 class="sec">Signals</h3><div class="insight-grid">' + "".join(cards) + "</div>")
+    return "".join(out)
+
+
+def _insight_card(title, big, detail) -> str:
+    return (f'<div class="ins-card"><div class="ins-title">{_esc(title)}</div>'
+            f'<div class="ins-big num">{_esc(big)}</div>'
+            f'<div class="ins-detail">{_esc(detail)}</div></div>')
+
+
 def _correlations_tab(c) -> str:
     corr = c["correlation"]
     findings = corr.get("findings", [])
@@ -797,8 +868,9 @@ h1,h2,.hero-headline,.hero-grade,.rev-gmi span,.hero-metric span{font-family:var
 .t-title,.lg-title,.sub,.doc-area,.spark-foot,.card-filter,.t-foot{font-family:var(--font-mono);
 letter-spacing:.02em}
 /* one sticky block so the nav can never slide underneath the header */
-.topbar{position:sticky;top:0;z-index:6;background:#0a0e16cc;backdrop-filter:blur(8px);
-border-bottom:1px solid #1f2937}
+.topbar{position:sticky;top:0;z-index:6;background:#0a0e16e6;backdrop-filter:blur(10px);
+border-bottom:1px solid #1e2636;padding-top:env(safe-area-inset-top)}
+main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
 header{position:relative;padding:10px 16px}.hdr-glucose{font-size:22px;font-weight:700}
 .hdr-age{color:#9aa8bd;font-size:13px}
 .refresh{position:absolute;top:10px;right:12px;background:#1f2937;color:#c3d0e2;border:0;
@@ -809,7 +881,7 @@ background:linear-gradient(90deg,transparent,#0a0e16);pointer-events:none}
 nav{display:flex;gap:4px;padding:6px 12px;overflow-x:auto;scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
 nav button{background:#1f2937;color:#c3d0e2;border:0;padding:0 14px;min-height:44px;border-radius:8px;
-cursor:pointer;white-space:nowrap;font-size:14px}nav button.active{background:#3987e5;color:#fff}
+cursor:pointer;white-space:nowrap;font-size:14px}nav button.active{background:#1f5fbf;color:#fff}
 nav button:focus-visible{outline:2px solid #3987e5;outline-offset:2px}
 #hhtip{position:fixed;display:none;z-index:20;max-width:180px;background:#1f2937;color:#eef2f9;
 border:1px solid #334155;border-radius:8px;padding:6px 9px;font-size:12px;pointer-events:none}
@@ -856,7 +928,7 @@ border-top:1px solid #1e2636;padding-top:10px}
 @keyframes fill{from{width:0}}
 @media(prefers-reduced-motion:reduce){.hero,.gauge i{animation:none}}
 .winbar{margin-bottom:10px}.winbtn{background:#1f2937;color:#c3d0e2;border:0;margin-right:4px;
-padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#3987e5;color:#fff}
+padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#1f5fbf;color:#fff}
 .agp{width:100%;height:auto;background:#0b111d;border-radius:10px;margin:6px 0}
 .agp-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;align-items:baseline;margin-top:8px}
 .agp-title{font-weight:600;font-size:13px}
@@ -913,6 +985,17 @@ align-items:center;scrollbar-width:none}.heartbeat::-webkit-scrollbar{display:no
 .hb-fresh{border:1px solid #199e70}.hb-stale{border:1px solid #fab219;color:#fbbf24}
 .hb-down,.hb-no_data,.hb-future{border:1px solid #d03b3b;color:#fca5a5}
 .xbtn{display:inline-block;background:#3987e5;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700}
+.tod{display:flex;flex-direction:column;gap:8px;margin:6px 0}
+.tod-row{display:flex;align-items:center;gap:10px;font-size:13px}
+.tod-lbl{flex:0 0 120px;display:flex;flex-direction:column}.tod-lbl small{color:#8a99b0;font-family:var(--font-mono);font-size:10px}
+.tod-bar{flex:1;height:14px;background:#0a0e16;border:1px solid #1e2636;border-radius:7px;overflow:hidden}
+.tod-bar i{display:block;height:100%;border-radius:7px}
+.tod-val{flex:0 0 84px;text-align:right;font-family:var(--font-mono);font-weight:600}
+.insight-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.ins-card{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:14px}
+.ins-title{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a99b0}
+.ins-big{font-family:var(--font-display);font-size:30px;letter-spacing:-.01em;margin:4px 0 6px}
+.ins-detail{font-size:13px;color:#c3d0e2;line-height:1.5}
 .rev-hero{display:flex;gap:20px;align-items:center;background:linear-gradient(135deg,#111725,#161d2e);
 border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex-wrap:wrap}
 .rev-gmi span{font-size:40px;font-weight:800;color:#3987e5}.rev-gmi label{display:block;font-size:11px;color:#9aa8bd}
@@ -1029,7 +1112,8 @@ def render(cockpit: dict) -> str:
 
     bodies = {
         "Today": _today_tab(cockpit), "Reversal": _reversal_tab(cockpit),
-        "Trends": _trends_tab(cockpit), "Correlations": _correlations_tab(cockpit),
+        "Trends": _trends_tab(cockpit), "Patterns": _patterns_tab(cockpit),
+        "Correlations": _correlations_tab(cockpit),
         "Analytics": _analytics_tab(cockpit), "Food": _food_tab(cockpit),
         "Experiments": _experiments_tab(cockpit), "Custom": _custom_tab(cockpit),
         "Review": _review_tab(cockpit), "Export": _export_tab(cockpit),
@@ -1040,10 +1124,22 @@ def render(cockpit: dict) -> str:
                   f'onclick="showTab(\'{t}\')">{t}</button>' for i, t in enumerate(TABS))
     tabs = "".join(f'<section id="tab-{t}" role="tabpanel" class="tab {"active" if i==0 else ""}">'
                    f'<h2>{t}</h2>{bodies[t]}</section>' for i, t in enumerate(TABS))
+    # CSP is a load-bearing control, not a claim: everything is inlined/same-origin, so lock the
+    # page to its own origin + data-URI fonts and forbid any external fetch. (§A: no external hosts.)
+    csp = ("default-src 'none'; base-uri 'none'; img-src 'self' data:; font-src data:; "
+           "style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; "
+           "manifest-src 'self'; worker-src 'self'; form-action 'none'")
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta http-equiv="Content-Security-Policy" content="{csp}">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
             f'<meta name="theme-color" content="#0a0e16">'
+            f'<meta name="apple-mobile-web-app-capable" content="yes">'
+            f'<meta name="mobile-web-app-capable" content="yes">'
+            f'<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+            f'<meta name="apple-mobile-web-app-title" content="Health OS">'
+            f'<meta name="color-scheme" content="dark">'
             f'<link rel="manifest" href="manifest.json">'
+            f'<link rel="apple-touch-icon" href="icon-192.png">'
             f'<title>Health OS</title><style>{assets.FONT_CSS}{_TOKENS}{_CSS}</style></head><body>'
             f'<div class="topbar"><header>{hdr}{banner}</header>'
             f'<div class="navwrap"><nav role="tablist" aria-label="Sections">{nav}</nav></div></div>'

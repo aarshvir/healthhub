@@ -32,7 +32,9 @@ import integrity
 import journal
 import labs as labs_mod
 import mood_energy
+import patterns as patterns_mod
 import reversal as reversal_mod
+import streaks as streaks_mod
 import symptoms
 import wearables as wearables_mod
 
@@ -57,6 +59,8 @@ class CycleResult:
     review_text: str = ""
     labs: dict = dataclasses.field(default_factory=dict)
     reversal: dict = dataclasses.field(default_factory=dict)
+    streaks: list = dataclasses.field(default_factory=list)
+    patterns: dict = dataclasses.field(default_factory=dict)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -155,6 +159,13 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
     reversal_view = reversal_mod.build(daily_frame, metrics=metrics, labs_panel=labs_panel)
     violations += labs_mod.self_check(labs_panel) + reversal_mod.self_check(reversal_view)
 
+    # habit streaks (the daily loop) + time-of-day / dawn / weekday / trend-change patterns,
+    # both over the wide daily frame (patterns also uses the wide-window AGP).
+    streaks_view = streaks_mod.compute(daily_frame)
+    wide_trend = analytics.compute(store, window_days=corr_window, now=now)
+    patterns_view = patterns_mod.compute(wide_trend.get("agp", []), daily_frame)
+    violations += streaks_mod.self_check(streaks_view) + patterns_mod.self_check(patterns_view)
+
     # log-driven analytics (only meaningful once a journal exists)
     food_ranking = food_impact.rank_foods(store, now=now)
     experiment_results = experiments_mod.compare_all_tags(store, now=now)
@@ -219,7 +230,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             insights_text=insights_text, quarantine=quarantined,
             custom_cards=custom_cards, heartbeat=health,
             daily_frame=daily_frame, correlation=correlation, review_text=review_text,
-            labs=labs_panel, reversal=reversal_view, now=now)
+            labs=labs_panel, reversal=reversal_view, streaks=streaks_view,
+            patterns=patterns_view, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
@@ -242,5 +254,6 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         food_ranking=food_ranking, experiments=experiment_results,
         custom_cards=custom_cards, heartbeat=health, correlation=correlation,
         daily_frame=daily_frame, review_text=review_text, labs=labs_panel,
-        reversal=reversal_view, artifacts=artifacts,
+        reversal=reversal_view, streaks=streaks_view, patterns=patterns_view,
+        artifacts=artifacts,
     )

@@ -129,11 +129,14 @@ def doctor_list(*, labs_panel=None, metrics=None) -> list[dict]:
         v = entry.get("value")
         return v if isinstance(v, (int, float)) else None
 
-    # 1) diabetic-range glycemia -> endocrinologist
+    # 1) diabetic-range glycemia -> endocrinologist. Cite the marker that ACTUALLY crossed
+    # 6.5 (a §A provenance rule: never attribute the claim to a value that didn't trigger it).
     a1c = markers.get("hba1c", {}).get("value")
     g = gmi_val()
-    if (a1c is not None and a1c >= 6.5) or (g is not None and g >= 6.5):
-        basis = f"HbA1c {a1c:g}%" if a1c is not None else f"GMI {g:.1f}%"
+    a1c_high = a1c is not None and a1c >= 6.5
+    gmi_high = g is not None and g >= 6.5
+    if a1c_high or gmi_high:
+        basis = f"HbA1c {a1c:g}%" if a1c_high else f"GMI {g:.1f}%"
         items.append({"priority": 1, "area": "Glycemia",
                       "text": "Diabetic-range glycemia — confirm management with an endocrinologist.",
                       "based_on": basis})
@@ -167,8 +170,30 @@ def doctor_list(*, labs_panel=None, metrics=None) -> list[dict]:
     return items
 
 
+def reconcile(metrics=None, labs_panel=None) -> dict:
+    """The glycation gap: CGM-estimated A1c (GMI) vs the entered lab HbA1c.
+
+    Bergenstal 2018 is explicit that GMI is an *estimate* and often differs from measured A1c;
+    a discordance ≥0.5% is common and clinically meaningful (hemoglobinopathy, iron deficiency,
+    altered RBC turnover — all plausible in a high-inflammation male). Surfacing the gap keeps
+    the cockpit honest about which number is which.
+    """
+    g = ((metrics or {}).get("gmi_pct") or {}).get("value")
+    a1c = (((labs_panel or {}).get("markers", {}) or {}).get("hba1c") or {}).get("value")
+    if not isinstance(g, (int, float)) or not isinstance(a1c, (int, float)):
+        return {"ok": False}
+    gap = float(g) - float(a1c)
+    if abs(gap) < 0.5:
+        note = "Your CGM estimate agrees with your lab A1c."
+    else:
+        note = (f"Your CGM estimate reads {'higher' if gap > 0 else 'lower'} than your lab A1c "
+                f"by {abs(gap):.1f}% — worth mentioning to your doctor.")
+    return {"ok": True, "gmi_pct": round(float(g), 2), "lab_hba1c_pct": round(float(a1c), 2),
+            "gap_pct": round(gap, 2), "discordant": abs(gap) >= 0.5, "note": note}
+
+
 def build(frame, *, metrics=None, labs_panel=None, horizon_days: int = 90) -> dict:
-    """Assemble the full reversal view: ladder + projection + doctor list."""
+    """Assemble the full reversal view: ladder + projection + reconciliation + doctor list."""
     current_mean = None
     entry = (metrics or {}).get("mean_mgdl") or {}
     if isinstance(entry.get("value"), (int, float)):
@@ -181,6 +206,7 @@ def build(frame, *, metrics=None, labs_panel=None, horizon_days: int = 90) -> di
     return {
         "ladder": ladder(current_mean),
         "projection": project(frame or [], horizon_days=horizon_days),
+        "reconcile": reconcile(metrics=metrics, labs_panel=labs_panel),
         "doctor_list": doctor_list(labs_panel=labs_panel, metrics=metrics),
     }
 

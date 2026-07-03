@@ -201,3 +201,23 @@ def test_self_check_flags_quarantined_value_in_header():
         latest_glucose={"ts": (NOW - timedelta(minutes=5)).isoformat(), "value": 9999},
         quarantine=[{"payload": {"glucose_mgdl": 9999}}], now=NOW)
     assert build_dashboard.self_check(cockpit) != []
+
+def test_doctor_list_cites_gmi_when_only_gmi_crossed():
+    # GMI 7.0 (diabetic) but lab HbA1c 6.2 (below 6.5) -> must cite GMI, not HbA1c
+    import store as store_mod
+    with freeze_time(NOW):
+        integrity.cache_clear()
+        s = store_mod.Store(":memory:")
+        s.append_events("labs", [_lab("HbA1c", 6.2, days_ago=1, unit="%")], key_field="key", now=NOW)
+        p = labs.panel(s, now=NOW)
+        items = reversal.doctor_list(labs_panel=p, metrics={"gmi_pct": {"value": 7.0}})
+        s.close(); integrity.cache_clear()
+    gly = next(it for it in items if it["area"] == "Glycemia")
+    assert gly["based_on"].startswith("GMI")   # not "HbA1c 6.2%", which didn't cross 6.5
+
+
+def test_reconcile_glycation_gap():
+    r = reversal.reconcile(metrics={"gmi_pct": {"value": 6.9}},
+                           labs_panel={"markers": {"hba1c": {"value": 6.2}}})
+    assert r["ok"] and r["gap_pct"] == pytest.approx(0.7) and r["discordant"] is True
+    assert reversal.reconcile(metrics={}, labs_panel={})["ok"] is False
