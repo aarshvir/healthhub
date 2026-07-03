@@ -624,12 +624,16 @@ def _corr_card(f) -> str:
     chip = _rho_color(r)
     arrow = "↑" if f.get("direction") == "+" else "↓"
     kind = {"same-day": "same-day", "lag-1": "next-day", "lever": "on/off"}.get(f.get("kind"), "")
+    ci = f.get("ci")
+    ci_html = (f'<span class="corr-ci">95% CI {ci[0]:+.2f}…{ci[1]:+.2f}</span>'
+               if ci and ci[0] is not None else "")
+    sig = ('<span class="pill pill-sig">significant</span>' if f.get("significant")
+           else '<span class="pill pill-exp">exploratory</span>')
     return (f'<div class="corr-card">'
             f'<div class="corr-r" style="background:{chip}">{arrow} {r:+.2f}</div>'
             f'<div class="corr-body"><div class="corr-lbl">{_esc(f.get("label"))}</div>'
-            f'<div class="corr-meta"><span class="pill">{_esc(kind)}</span>'
-            f'<span class="pill">{_esc(f.get("strength"))}</span>'
-            f'<span class="corr-n">{_esc(f.get("detail"))}</span></div></div></div>')
+            f'<div class="corr-meta"><span class="pill">{_esc(kind)}</span>{sig}'
+            f'<span class="corr-n">{_esc(f.get("detail"))}</span>{ci_html}</div></div></div>')
 
 
 def _level_color(v):
@@ -709,8 +713,11 @@ def _correlations_tab(c) -> str:
     if not findings and not corr.get("matrix"):
         return ('<p class="muted">Correlations need several days across multiple streams. '
                 'Once glucose, sleep, activity and your journal overlap, associations appear here.</p>')
+    nsig = corr.get("n_significant", 0)
     note = ('<p class="muted">Associations across everything you log — <b>observational, not '
-            'causal</b>. Each carries its sample size; weak/tiny-sample links are hidden.</p>')
+            'causal</b>. Each carries a 95% confidence interval; '
+            f'<b>{nsig}</b> survive multiple-comparison control (Benjamini-Hochberg, FDR 10%) '
+            'and are marked <b>significant</b> — the rest are <b>exploratory</b> leads.</p>')
     cards = ('<div class="corr-cards">' + "".join(_corr_card(f) for f in findings) + "</div>"
              if findings else '<p class="muted">No association cleared the evidence floor yet.</p>')
     heat = _heatmap(corr["matrix"], HEATMAP_FIELDS) if corr.get("matrix") else ""
@@ -952,6 +959,9 @@ pre{white-space:pre-wrap;background:#0b111d;padding:8px;border-radius:8px}
 .corr-lbl{font-weight:600;line-height:1.35}.corr-meta{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
 .pill{background:#1f2937;color:#c3d0e2;border-radius:20px;padding:2px 9px;font-size:11px}
 .corr-n{color:#8091a7;font-size:12px}
+.corr-ci{color:#8a99b0;font-size:11px;font-family:var(--font-mono)}
+.pill-sig{background:#12351f;color:#5bd47e;border:1px solid #2ea04355}
+.pill-exp{background:#241a10;color:#e0b365;border:1px solid #d9a02144}
 .heatwrap{position:relative;overflow-x:auto;padding-bottom:4px}
 .heatwrap::after{content:"";position:absolute;top:0;right:0;width:22px;height:100%;
 background:linear-gradient(90deg,transparent,#0a0e16);pointer-events:none}

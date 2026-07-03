@@ -6,7 +6,61 @@ ranks. Everything reports ``n`` so callers can refuse to over-interpret tiny sam
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
+
+
+def _phi(x: float) -> float:
+    """Standard-normal CDF via erf (no scipy)."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def fisher(rho, n) -> dict:
+    """Fisher-z 95% CI and a two-sided p-value for a (Spearman) correlation.
+
+    Uncertainty is a first-class number here: a correlation with no interval is as untrustworthy
+    as an ungrounded one. Uses the Fieller SE for Spearman z (≈1.03/√(n−3)).
+    """
+    if rho is None or n is None or n < 5 or abs(rho) >= 1.0:
+        return {"ci": (None, None), "p": None}
+    z = math.atanh(rho)
+    se = 1.03 / math.sqrt(n - 3)
+    lo, hi = math.tanh(z - 1.96 * se), math.tanh(z + 1.96 * se)
+    p = 2.0 * (1.0 - _phi(abs(z / se)))
+    return {"ci": (round(lo, 3), round(hi, 3)), "p": round(min(1.0, p), 4)}
+
+
+def cohens_d_ci(d, n_treated, n_control) -> dict:
+    """Approximate 95% CI for Cohen's d (Hedges large-sample SE)."""
+    if d is None or n_treated < 2 or n_control < 2:
+        return {"ci": (None, None)}
+    nt, nc = n_treated, n_control
+    se = math.sqrt((nt + nc) / (nt * nc) + d * d / (2.0 * (nt + nc)))
+    return {"ci": (round(d - 1.96 * se, 3), round(d + 1.96 * se, 3))}
+
+
+def bh_fdr(pvals, q: float = 0.10) -> list[bool]:
+    """Benjamini-Hochberg: which p-values are significant controlling FDR at *q*.
+
+    Returns a bool list aligned to *pvals* (None p-values are never significant). With hundreds
+    of pairwise tests at n≈75, raw |rho| thresholds are a false-discovery machine; BH keeps the
+    expected proportion of false 'findings' below q.
+    """
+    idx = [i for i, p in enumerate(pvals) if p is not None]
+    m = len(idx)
+    sig = [False] * len(pvals)
+    if m == 0:
+        return sig
+    order = sorted(idx, key=lambda i: pvals[i])
+    kmax = 0
+    for rank, i in enumerate(order, start=1):
+        if pvals[i] <= q * rank / m:
+            kmax = rank
+    for rank, i in enumerate(order, start=1):
+        if rank <= kmax:
+            sig[i] = True
+    return sig
 
 
 def rankdata(a: np.ndarray) -> np.ndarray:

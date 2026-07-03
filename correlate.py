@@ -119,7 +119,7 @@ def _lever_label(lever, outcome, d, *, lag) -> str:
     return f"{lo} is {'higher' if d >= 0 else 'lower'} on {_lever_when(lever)}{tail}"
 
 
-def _finding(kind, a, b, *, r, n, cross, detail, extra=None) -> dict:
+def _finding(kind, a, b, *, r, n, cross, detail, p=None, ci=None, extra=None) -> dict:
     out = {
         "kind": kind, "a": a, "b": b,
         "label": {"same-day": _pair_label, "lag-1": _lag_label}.get(kind, lambda *_: "")(a, b, r)
@@ -130,6 +130,9 @@ def _finding(kind, a, b, *, r, n, cross, detail, extra=None) -> dict:
         "cross_stream": bool(cross),
         "strength": _r_strength(r),
         "detail": detail,
+        "p": None if p is None else round(float(p), 4),
+        "ci": list(ci) if ci and ci[0] is not None else None,
+        "significant": False,   # set by the FDR pass in analyze()
         "score": round(abs(float(r)) * _evidence(n), 4),
     }
     if extra:
@@ -148,6 +151,20 @@ def _lag_pairs(frame, a, b):
             ys.append(by_date[nxt].get(b))
     to_f = lambda v: np.nan if v is None else float(v)  # noqa: E731
     return np.array([to_f(v) for v in xs]), np.array([to_f(v) for v in ys])
+
+
+def _detrend(a):
+    """Linearly detrend a series (remove the slow common drift) before lag-correlating, so a
+    reversal's shared downward trend doesn't manufacture spurious next-day 'findings'."""
+    a = np.asarray(a, dtype=float)
+    mask = ~np.isnan(a)
+    if int(mask.sum()) < 4:
+        return a
+    idx = np.arange(a.size, dtype=float)
+    coef = np.polyfit(idx[mask], a[mask], 1)
+    out = a.copy()
+    out[mask] = a[mask] - np.polyval(coef, idx[mask])
+    return out
 
 
 def matrix(frame, *, fields=None, min_n: int = MIN_N) -> dict:
@@ -176,8 +193,10 @@ def _same_day_findings(frame, cols, *, cross_only, min_n, min_rho):
             sp = statutil.spearman(cols[a], cols[b])
             if sp["rho"] is None or sp["n"] < min_n or abs(sp["rho"]) < min_rho:
                 continue
+            fs = statutil.fisher(sp["rho"], sp["n"])
             out.append(_finding("same-day", a, b, r=sp["rho"], n=sp["n"],
-                                cross=_cross(a, b), detail=f"n={sp['n']} days"))
+                                cross=_cross(a, b), detail=f"n={sp['n']} days",
+                                p=fs["p"], ci=fs["ci"]))
     return out
 
 
@@ -190,11 +209,14 @@ def _lag_findings(frame, *, fields, cross_only, min_n, min_rho):
             if cross_only and not _cross(a, b):
                 continue
             x, y = _lag_pairs(frame, a, b)
-            sp = statutil.spearman(x, y)
+            # detrend both sides so the reversal's shared drift can't fake a next-day link
+            sp = statutil.spearman(_detrend(x), _detrend(y))
             if sp["rho"] is None or sp["n"] < min_n or abs(sp["rho"]) < min_rho:
                 continue
+            fs = statutil.fisher(sp["rho"], sp["n"])
             out.append(_finding("lag-1", a, b, r=sp["rho"], n=sp["n"],
-                                cross=_cross(a, b), detail=f"n={sp['n']} day-pairs"))
+                                cross=_cross(a, b), detail=f"n={sp['n']} day-pairs",
+                                p=fs["p"], ci=fs["ci"]))
     return out
 
 
@@ -221,11 +243,14 @@ def _lever_findings(frame, *, min_n, min_d):
                 if d is None or min(nt, nc) < min_n or abs(d) < min_d:
                     continue
                 r = _d_to_r(d)
+                fs = statutil.fisher(r, min(nt, nc))
+                dci = statutil.cohens_d_ci(d, nt, nc)
                 out.append(_finding(
                     "lever", lever, outcome, r=r, n=min(nt, nc), cross=True,
-                    detail=f"n={nt} vs {nc} days",
+                    detail=f"n={nt} vs {nc} days", p=fs["p"], ci=fs["ci"],
                     extra={"label": _lever_label(lever, outcome, d, lag=lag),
-                           "effect_d": round(float(d), 3), "lag": lag,
+                           "effect_d": round(float(d), 3), "effect_d_ci": list(dci["ci"])
+                           if dci["ci"][0] is not None else None, "lag": lag,
                            "n_treated": nt, "n_control": nc}))
     return out
 
@@ -245,11 +270,22 @@ def analyze(frame, *, top: int = 12, min_n: int = MIN_N, cross_stream_only: bool
     findings += _lag_findings(frame, fields=fields, cross_only=cross_stream_only,
                               min_n=min_n, min_rho=MIN_RHO_LAG)
     findings += _lever_findings(frame, min_n=min_n, min_d=MIN_D)
-    findings.sort(key=lambda f: f["score"], reverse=True)
+
+    # Multiple-comparison control: with hundreds of pairwise tests, raw |rho| thresholds are a
+    # false-discovery machine. Mark which findings survive Benjamini-Hochberg (FDR 10%).
+    flags = statutil.bh_fdr([f.get("p") for f in findings], q=0.10)
+    for f, sig in zip(findings, flags):
+        f["significant"] = bool(sig)
+    findings.sort(key=lambda f: (f["significant"], f["score"]), reverse=True)
+
+    n_sig = sum(1 for f in findings if f["significant"])
+    # headline prefers FDR-significant findings; if none clear, still show the top few (flagged)
+    headline = [f for f in findings if f["significant"]][:top] or findings[:min(top, 6)]
 
     return {
-        "findings": findings[:top],
+        "findings": headline,
         "all_findings": findings,
+        "n_significant": n_sig,
         "matrix": matrix(frame, fields=fields, min_n=min_n),
         "coverage": daily.coverage(frame),
         "n_days": len(frame),
