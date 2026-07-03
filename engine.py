@@ -19,6 +19,7 @@ import analytics
 import assess as assess_mod
 import build_dashboard
 import clinical
+import coach as coach_mod
 import correlate as correlate_mod
 import custom as custom_mod
 import daily as daily_mod
@@ -61,6 +62,7 @@ class CycleResult:
     reversal: dict = dataclasses.field(default_factory=dict)
     streaks: list = dataclasses.field(default_factory=list)
     patterns: dict = dataclasses.field(default_factory=dict)
+    coach: list = dataclasses.field(default_factory=list)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -178,6 +180,12 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         mood_result=mood_energy.analyze(store, window_days=max(90, window_days), now=now))
     insights_text = insights_mod.narrate(findings, metrics=metrics)
 
+    # the prescriptive layer — "Today's moves" ranked from the user's own measured levers
+    coach_moves = coach_mod.moves(metrics=metrics, experiments=experiment_results,
+                                  food_ranking=food_ranking, patterns=patterns_view,
+                                  reversal=reversal_view)
+    violations += coach_mod.self_check(coach_moves)
+
     # saved custom analyses: executed deterministically every cycle (no LLM math at run time)
     custom_cards = (custom_mod.run_registry(store, path=analyses_path, now=now)
                     if analyses_path else [])
@@ -231,7 +239,7 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             custom_cards=custom_cards, heartbeat=health,
             daily_frame=daily_frame, correlation=correlation, review_text=review_text,
             labs=labs_panel, reversal=reversal_view, streaks=streaks_view,
-            patterns=patterns_view, now=now)
+            patterns=patterns_view, coach=coach_moves, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             artifacts["dashboard"] = build_dashboard.write_dashboard(
@@ -255,5 +263,5 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         custom_cards=custom_cards, heartbeat=health, correlation=correlation,
         daily_frame=daily_frame, review_text=review_text, labs=labs_panel,
         reversal=reversal_view, streaks=streaks_view, patterns=patterns_view,
-        artifacts=artifacts,
+        coach=coach_moves, artifacts=artifacts,
     )

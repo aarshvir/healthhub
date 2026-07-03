@@ -317,7 +317,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
                   insights_text="", quarantine=None, custom_cards=None,
                   heartbeat=None, daily_frame=None, correlation=None,
                   review_text="", labs=None, reversal=None, streaks=None,
-                  patterns=None, now=None) -> dict:
+                  patterns=None, coach=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
@@ -338,7 +338,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "custom_cards": custom_cards or [], "heartbeat": heartbeat or {},
         "daily_frame": daily_frame or [], "correlation": correlation or {},
         "review_text": review_text or "", "labs": labs or {}, "reversal": reversal or {},
-        "streaks": streaks or [], "patterns": patterns or {},
+        "streaks": streaks or [], "patterns": patterns or {}, "coach": coach or [],
     }
 
 
@@ -421,6 +421,21 @@ def _hero(c) -> str:
             f'{f"<p class=hero-lead>{_esc(lead)}</p>" if lead else ""}</div></div>')
 
 
+def _moves_card(c) -> str:
+    """'Today's moves' — the prescriptive layer: 2-3 grounded actions, highest leverage first."""
+    ms = c.get("coach") or []
+    if not ms:
+        return ""
+    rows = "".join(
+        f'<div class="move move-p{m.get("priority", 2)}">'
+        f'<div class="move-impact">{_esc(m.get("impact"))}</div>'
+        f'<div class="move-body"><div class="move-title">{_esc(m.get("title"))}</div>'
+        f'<div class="move-detail">{_esc(m.get("detail"))}</div></div></div>' for m in ms)
+    return ('<div class="moves"><div class="moves-h">Today\'s moves '
+            '<span class="muted">· from your own data</span></div>'
+            f'{rows}</div>')
+
+
 def _today_tab(c) -> str:
     m = c["metrics"]
     frame = c["daily_frame"]
@@ -460,7 +475,7 @@ def _today_tab(c) -> str:
                            source="daily",
                            freshness=_date_dot(d, gen_at, stale_days=stale_days),
                            accent=_color_of(field)))
-    return _hero(c) + '<div class="grid">' + "".join(tiles) + "</div>"
+    return _hero(c) + _moves_card(c) + '<div class="grid">' + "".join(tiles) + "</div>"
 
 
 def _status_dot(status) -> str:
@@ -995,6 +1010,15 @@ align-items:center;scrollbar-width:none}.heartbeat::-webkit-scrollbar{display:no
 .hb-fresh{border:1px solid #199e70}.hb-stale{border:1px solid #fab219;color:#fbbf24}
 .hb-down,.hb-no_data,.hb-future{border:1px solid #d03b3b;color:#fca5a5}
 .xbtn{display:inline-block;background:#3987e5;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700}
+.moves{margin:0 0 16px;background:#0e1524;border:1px solid #223049;border-radius:16px;padding:14px 16px}
+.moves-h{font-family:var(--font-display);font-size:16px;margin-bottom:10px}
+.move{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid #182238}
+.move:first-of-type{border-top:0}
+.move-impact{flex:0 0 auto;min-width:74px;font-family:var(--font-mono);font-size:12px;font-weight:600;
+color:#eaf1fb;background:#16233b;border:1px solid #263a5c;border-radius:8px;padding:6px 8px;text-align:center}
+.move-p1 .move-impact{border-color:#2ea04366;color:#7ee0a0}
+.move-title{font-weight:600;font-size:14.5px;margin-bottom:2px}
+.move-detail{font-size:13px;color:#c3d0e2;line-height:1.5}
 .tod{display:flex;flex-direction:column;gap:8px;margin:6px 0}
 .tod-row{display:flex;align-items:center;gap:10px;font-size:13px}
 .tod-lbl{flex:0 0 120px;display:flex;flex-direction:column}.tod-lbl small{color:#8a99b0;font-family:var(--font-mono);font-size:10px}
