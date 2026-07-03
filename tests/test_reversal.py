@@ -201,3 +201,45 @@ def test_self_check_flags_quarantined_value_in_header():
         latest_glucose={"ts": (NOW - timedelta(minutes=5)).isoformat(), "value": 9999},
         quarantine=[{"payload": {"glucose_mgdl": 9999}}], now=NOW)
     assert build_dashboard.self_check(cockpit) != []
+
+def test_doctor_list_cites_gmi_when_only_gmi_crossed():
+    # GMI 7.0 (diabetic) but lab HbA1c 6.2 (below 6.5) -> must cite GMI, not HbA1c
+    import store as store_mod
+    with freeze_time(NOW):
+        integrity.cache_clear()
+        s = store_mod.Store(":memory:")
+        s.append_events("labs", [_lab("HbA1c", 6.2, days_ago=1, unit="%")], key_field="key", now=NOW)
+        p = labs.panel(s, now=NOW)
+        items = reversal.doctor_list(labs_panel=p, metrics={"gmi_pct": {"value": 7.0}})
+        s.close(); integrity.cache_clear()
+    gly = next(it for it in items if it["area"] == "Glycemia")
+    assert gly["based_on"].startswith("GMI")   # not "HbA1c 6.2%", which didn't cross 6.5
+
+
+def test_reconcile_glycation_gap():
+    r = reversal.reconcile(metrics={"gmi_pct": {"value": 6.9}},
+                           labs_panel={"markers": {"hba1c": {"value": 6.2}}})
+    assert r["ok"] and r["gap_pct"] == pytest.approx(0.7) and r["discordant"] is True
+    assert reversal.reconcile(metrics={}, labs_panel={})["ok"] is False
+
+
+def test_weight_view_direct_bands():
+    frame = [{"date": f"2026-05-{d:02d}", "weight_kg": w}
+             for d, w in [(1, 126.0), (10, 122.0), (20, 118.0), (30, 114.0)]]  # 12 kg lost
+    w = reversal.weight_view(frame)
+    assert w["ok"] and w["kg_lost"] == pytest.approx(12.0)
+    assert w["remission_band_pct"] == 57      # 10–15 kg band
+    assert w["pct_lost"] == pytest.approx(9.5, abs=0.1)
+    assert reversal.weight_view([{"date": "2026-05-01", "weight_kg": 100}])["ok"] is False
+
+
+def test_hepatic_scores_de_ritis_and_fib4():
+    markers = {"alt": {"value": 85}, "ast": {"value": 47}, "platelets": {"value": 220}}
+    d0 = labs.hepatic_scores(markers)                     # no age -> De Ritis only
+    assert [x["key"] for x in d0] == ["de_ritis"]
+    assert d0[0]["value"] == pytest.approx(0.55, abs=0.01)
+    d1 = labs.hepatic_scores(markers, age=35)             # + age + platelets -> FIB-4
+    keys = {x["key"] for x in d1}
+    assert keys == {"de_ritis", "fib4"}
+    fib4 = next(x for x in d1 if x["key"] == "fib4")
+    assert fib4["value"] == pytest.approx((35 * 47) / (220 * (85 ** 0.5)), abs=0.01)

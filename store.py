@@ -194,6 +194,8 @@ class Store:
         now = integrity.now_utc() if now is None else now
         cutoff = _iso(now - timedelta(days=retention_days))
         cur = self.conn.execute("DELETE FROM glucose WHERE ts < ?", (cutoff,))
+        # keep the quarantine table bounded too: drop entries flagged before the retention window
+        self.conn.execute("DELETE FROM quarantine WHERE flagged_at < ?", (cutoff,))
         self.conn.commit()
         return cur.rowcount
 
@@ -277,9 +279,15 @@ class Store:
 
     # -- internals -------------------------------------------------------------------
     def _quarantine(self, stream, ts, payload, reason, flagged_at) -> None:
+        # Idempotent: re-ingesting the same bad row each cycle must not append a new quarantine
+        # entry forever (that grew a persistent DB without bound). Dedup on the content itself.
+        body = json.dumps(payload, default=str)
         self.conn.execute(
-            "INSERT INTO quarantine(stream, ts, payload, reason, flagged_at) VALUES(?,?,?,?,?)",
-            (stream, ts, json.dumps(payload, default=str), reason, flagged_at))
+            "INSERT INTO quarantine(stream, ts, payload, reason, flagged_at) "
+            "SELECT ?,?,?,?,? WHERE NOT EXISTS ("
+            "  SELECT 1 FROM quarantine WHERE stream=? AND IFNULL(ts,'')=IFNULL(?,'') "
+            "  AND reason=? AND payload=?)",
+            (stream, ts, body, reason, flagged_at, stream, ts, reason, body))
 
     @staticmethod
     def _row_json(df: pd.DataFrame, row_index) -> dict:

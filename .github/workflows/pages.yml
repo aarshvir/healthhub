@@ -56,7 +56,7 @@ jobs:
         run: |
           healthhub-cycle --out-dir publish
           cp publish/dashboard.html publish/index.html
-          cp phone/pwa/manifest.json phone/pwa/service-worker.js publish/ 2>/dev/null || true
+          cp phone/pwa/manifest.json phone/pwa/service-worker.js phone/pwa/*.png publish/ 2>/dev/null || true
       - name: Detect real vs demo data
         id: mode
         run: |
@@ -73,9 +73,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT }}
         run: |
+          PROJECT="${CF_PAGES_PROJECT:-healthhub-cockpit}"
+          # first run: create the Pages project automatically (no-op if it already exists)
+          npx --yes wrangler@3 pages project create "$PROJECT" \
+            --production-branch main 2>/dev/null || true
           npx --yes wrangler@3 pages deploy publish \
-            --project-name "${CF_PAGES_PROJECT:-healthhub-cockpit}" \
-            --branch main --commit-dirty=true
+            --project-name "$PROJECT" --branch main --commit-dirty=true
       # on a public repo, workflow artifacts are world-downloadable -> demo mode only
       - name: Upload pages artifact (demo mode only)
         if: ${{ steps.mode.outputs.real != 'true' }}

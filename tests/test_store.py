@@ -102,3 +102,20 @@ def test_events_idempotent(st):
 def test_self_check_clean(st):
     st.append_glucose(_glucose_df([100, 110, 120]), now=NOW)
     assert st.self_check(now=NOW) == []
+
+
+def test_quarantine_is_idempotent_on_repeat():
+    import pandas as pd
+    from datetime import datetime, timezone
+    from freezegun import freeze_time
+    import integrity, store as store_mod
+    NOW = datetime(2026, 6, 28, 12, 0, 0, tzinfo=timezone.utc)
+    with freeze_time(NOW):
+        integrity.cache_clear()
+        s = store_mod.Store(":memory:")
+        bad = pd.DataFrame([{"measured_at": NOW, "glucose_mgdl": 9999}])  # out of range -> quarantined
+        s.append_glucose(bad, now=NOW)
+        s.append_glucose(bad, now=NOW)              # same bad row again
+        s.append_glucose(bad, now=NOW)
+        assert len(s.quarantined()) == 1            # not 3 — idempotent
+        s.close(); integrity.cache_clear()

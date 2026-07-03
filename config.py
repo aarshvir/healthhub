@@ -15,7 +15,9 @@ Recognized environment variables (see .env.example):
 
 from __future__ import annotations
 
+import json as _json
 import os
+import zipfile
 
 # Names whose VALUES are secret (used by the leak scan / redaction). Non-secret settings
 # (regions, model names, sheet ids, hostnames) are intentionally excluded.
@@ -107,23 +109,56 @@ def redact(text: str) -> str:
     return text
 
 
-def assert_no_secrets(text: str, *, where: str = "output") -> str:
-    """Raise if any secret value appears in *text* (call before publishing HTML/JSON)."""
-    leaked = [k for k in SECRET_KEYS
-              if (os.environ.get(k) or "") and len(os.environ[k]) >= 4
-              and os.environ[k] in text]
+def _needles() -> list[tuple[str, str]]:
+    """(label, secret-value) pairs to scan for — whole secrets PLUS structured sub-fields.
+
+    A service-account JSON leaks via its private_key / client_email even if the whole blob
+    doesn't appear verbatim, so those are registered as needles too."""
+    out = []
+    for k in SECRET_KEYS:
+        v = os.environ.get(k) or ""
+        if len(v) >= 4:
+            out.append((k, v))
+    sa = os.environ.get("GOOGLE_SA_JSON") or ""
+    if sa.strip().startswith("{"):
+        try:
+            d = _json.loads(sa)
+            for f in ("private_key", "client_email", "private_key_id"):
+                sub = str(d.get(f) or "")
+                if len(sub) >= 8:
+                    out.append((f"GOOGLE_SA_JSON.{f}", sub))
+        except ValueError:
+            pass
+    return out
+
+
+def _scan_bytes(data: bytes, needles, where: str) -> None:
+    leaked = sorted({label for label, v in needles
+                     if v.encode("utf-8") in data or v.encode("utf-16-le") in data})
     if leaked:
         raise RuntimeError(f"secret(s) {leaked} would leak into {where}; aborting publish")
+
+
+def assert_no_secrets(text: str, *, where: str = "output") -> str:
+    """Raise if any secret value (or a structured sub-field) appears in *text*."""
+    _scan_bytes(text.encode("utf-8", "ignore"), _needles(), where)
     return text
 
 
 def scan_paths(paths, *, where: str = "publish") -> list:
-    """Leak gate: read each existing file and abort if any secret value appears (§A)."""
+    """Leak gate: scan each existing file's BYTES (not just utf-8 text) and abort if any secret
+    value appears. Zip-based artifacts (the shipped .xlsx) are unzipped and every entry scanned —
+    a binary artifact is never silently skipped (§A)."""
+    needles = _needles()
     for path in paths:
         try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
-        except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError):
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except (FileNotFoundError, IsADirectoryError):
             continue
-        assert_no_secrets(text, where=f"{where}:{path}")
+        _scan_bytes(data, needles, f"{where}:{path}")
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as z:
+                for name in z.namelist():
+                    _scan_bytes(z.read(name), needles, f"{where}:{path}!{name}")
     return list(paths)

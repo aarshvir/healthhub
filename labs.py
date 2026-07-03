@@ -18,6 +18,8 @@ it); numbers are the user's own entered figures, never invented.
 
 from __future__ import annotations
 
+import math
+
 import integrity
 
 # direction-of-good: how to read a value against its reference range
@@ -43,6 +45,7 @@ CATALOG = {
     "alt": ("ALT", "U/L", None, 40.0, LOW_GOOD, "Liver", 25.0),
     "ast": ("AST", "U/L", None, 40.0, LOW_GOOD, "Liver", 25.0),
     "ggt": ("GGT", "U/L", None, 55.0, LOW_GOOD, "Liver", 30.0),
+    "platelets": ("Platelets", "10⁹/L", 150.0, 400.0, IN_RANGE, "Liver", 250.0),
     # --- inflammation ---
     "hs_crp": ("hs-CRP", "mg/L", None, 3.0, LOW_GOOD, "Inflammation", 1.0),
     "esr": ("ESR", "mm/hr", None, 20.0, LOW_GOOD, "Inflammation", 10.0),
@@ -83,6 +86,7 @@ _ALIASES = {
     "totaltestosterone": "total_testosterone", "testosterone": "total_testosterone",
     "freetestosterone": "free_testosterone", "freet": "free_testosterone",
     "shbg": "shbg", "prolactin": "prolactin", "tsh": "tsh",
+    "platelets": "platelets", "platelet": "platelets", "plt": "platelets", "plateletcount": "platelets",
     "vitamind": "vitamin_d", "vitd": "vitamin_d", "25ohd": "vitamin_d",
     "homocysteine": "homocysteine",
     "vitaminb12": "vitamin_b12", "b12": "vitamin_b12",
@@ -243,7 +247,31 @@ def ingest(store, source, *, now=None):
                                ts_field="measured_at", now=now)
 
 
-def panel(store, *, now=None) -> dict:
+def hepatic_scores(markers: dict, *, age=None) -> list[dict]:
+    """Derived liver-fibrosis scores from an entered panel (fatty liver is a core target).
+
+    De Ritis (AST/ALT) needs only the transaminases; FIB-4 additionally needs age + platelets.
+    """
+    out = []
+    alt = _num((markers.get("alt") or {}).get("value"))
+    ast = _num((markers.get("ast") or {}).get("value"))
+    plt = _num((markers.get("platelets") or {}).get("value"))
+    age = _num(age)
+    if alt and ast and alt > 0:
+        ratio = ast / alt
+        out.append({"key": "de_ritis", "name": "AST/ALT (De Ritis)", "value": round(ratio, 2),
+                    "unit": "", "status": "warning" if ratio >= 1.0 else "good",
+                    "note": "De Ritis ratio — typically <1 in fatty liver; ≥1 can signal fibrosis."})
+        if age and plt and plt > 0:
+            fib4 = (age * ast) / (plt * math.sqrt(alt))
+            st = "good" if fib4 < 1.3 else ("warning" if fib4 <= 2.67 else "critical")
+            out.append({"key": "fib4", "name": "FIB-4", "value": round(fib4, 2), "unit": "",
+                        "status": st,
+                        "note": "Fibrosis-4 index — <1.3 low risk, >2.67 advanced-fibrosis risk."})
+    return out
+
+
+def panel(store, *, now=None, age=None) -> dict:
     """Latest value + status + trend for every entered lab marker, grouped by system.
 
     Returns ``{groups: {group: [marker_dict,...]}, markers: {key: marker_dict}, n_markers,
@@ -295,7 +323,8 @@ def panel(store, *, now=None) -> dict:
                for g in GROUP_ORDER if g in groups}
     critical = [m for m in markers.values() if m["status"] == "critical"]
     return {"groups": ordered, "markers": markers, "n_markers": len(markers),
-            "critical": critical, "generated_at": now.isoformat()}
+            "critical": critical, "derived": hepatic_scores(markers, age=age),
+            "generated_at": now.isoformat()}
 
 
 def self_check(p: dict) -> list[str]:

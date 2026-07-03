@@ -22,12 +22,13 @@ import html
 import json
 from datetime import date, timedelta
 
+import assets
 import correlate
 import daily
 import integrity
 
-TABS = ("Today", "Reversal", "Trends", "Correlations", "Analytics", "Food", "Experiments",
-        "Custom", "Review", "Export")
+TABS = ("Today", "Reversal", "Trends", "Patterns", "Correlations", "Analytics", "Food",
+        "Experiments", "Custom", "Review", "Export")
 # reserved status palette (dataviz): state colours, never reused for a data series
 STATUS_COLORS = {"good": "#0ca30c", "warning": "#fab219", "critical": "#d03b3b",
                  "unknown": "#8091a7"}
@@ -315,7 +316,8 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
                   food_ranking=None, experiments=None, assessment=None,
                   insights_text="", quarantine=None, custom_cards=None,
                   heartbeat=None, daily_frame=None, correlation=None,
-                  review_text="", labs=None, reversal=None, now=None) -> dict:
+                  review_text="", labs=None, reversal=None, streaks=None,
+                  patterns=None, coach=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
@@ -336,6 +338,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "custom_cards": custom_cards or [], "heartbeat": heartbeat or {},
         "daily_frame": daily_frame or [], "correlation": correlation or {},
         "review_text": review_text or "", "labs": labs or {}, "reversal": reversal or {},
+        "streaks": streaks or [], "patterns": patterns or {}, "coach": coach or [],
     }
 
 
@@ -349,32 +352,88 @@ def _latest(frame, field):
 # ------------------------------------------------------------------------------------------
 # tabs
 # ------------------------------------------------------------------------------------------
+def _top_streak(c):
+    """The most motivating live streak for the hero chip (prefer remission)."""
+    order = {"remission": 0, "titr": 1, "tir": 2, "safe": 3, "steady": 4, "walk": 5, "logged": 6}
+    active = [s for s in (c.get("streaks") or []) if s.get("current", 0) > 0]
+    if not active:
+        return None
+    active.sort(key=lambda s: (order.get(s["key"], 9), -s["current"]))
+    return active[0]
+
+
 def _hero(c) -> str:
     m = c["metrics"]
-    a = c["assessment"]
+    a = c["assessment"] or {}
+    lad = (c.get("reversal") or {}).get("ladder") or {}
 
     def mv(k):
         return (m.get(k) or {}).get("value")
 
     grade = a.get("grade")
-    score = a.get("score_pct")
     headline = a.get("headline") or "Your metabolic snapshot"
     review = (c.get("review_text") or "").strip()
-    lead = review.split(". ")[0] + "." if review else ""
+    lead = review.split(". ")[0].replace("Cross-stream associations (observational, not causal):", "").strip()
+    lead = (lead[:2].upper() + lead[2:] + ".") if lead and not lead.endswith(".") else lead
     gr = f'<div class="hero-grade grade-{_esc(grade)}">{_esc(grade or "—")}</div>' if a else ""
-    sc = (f'<div class="hero-score"><span>{_fmt(score, 0)}<small>/100</small></span>'
-          f'<div class="score-bar"><i style="width:{max(0, min(100, score or 0)):.0f}%"></i></div>'
-          f'</div>') if a else ""
-    mtb = mv("daily_metabolic_score")
-    mtb_html = (f'<div class="hero-metric"><span>{_fmt(mtb, 0)}</span>'
-                f'<label>Daily metabolic score</label></div>') if mtb is not None else ""
+
+    # The signature gauge: current GMI and how far it is from leaving the diabetic range.
+    if lad.get("ok"):
+        gmi = lad["current_gmi"]
+        prog = max(0.0, min(100.0, lad.get("overall_progress", 0) * 100.0))
+        nxt = lad.get("next")
+        cap = (f'{nxt["mean_gap"]:.0f} mg/dL lower average to reach {_esc(nxt["label"])} '
+               f'(GMI &lt;{nxt["gmi"]:g})' if nxt else 'You are in the non-diabetic range — hold it.')
+        gauge = (
+            f'<div class="hero-eyebrow">Estimated HbA1c · GMI</div>'
+            f'<div class="hero-gmi"><span class="num" data-count="{gmi:.1f}">{gmi:.1f}</span>'
+            f'<span class="hero-gmi-u">%</span></div>'
+            f'<div class="gauge" role="img" aria-label="{prog:.0f} percent from diagnosis to non-diabetic">'
+            f'<i style="--w:{prog:.0f}%"></i>'
+            f'<span class="gauge-tick" style="left:{prog:.0f}%"></span></div>'
+            f'<div class="hero-cap">{cap}</div>')
+    else:
+        score = a.get("score_pct") or 0
+        gauge = (f'<div class="hero-eyebrow">Metabolic score</div>'
+                 f'<div class="hero-gmi"><span class="num" data-count="{score:.0f}">{_fmt(score,0)}</span>'
+                 f'<span class="hero-gmi-u">/100</span></div>'
+                 f'<div class="gauge"><i style="--w:{max(0,min(100,score)):.0f}%"></i></div>')
+
+    chips = []
     tir = mv("tir_pct")
-    tir_html = (f'<div class="hero-metric"><span>{_fmt(tir, 0)}%</span>'
-                f'<label>Time in range</label></div>') if tir is not None else ""
+    if tir is not None:
+        chips.append(f'<div class="hero-metric"><span class="num">{_fmt(tir,0)}%</span>'
+                     f'<label>Time in range</label></div>')
+    mtb = mv("daily_metabolic_score")
+    if mtb is not None:
+        chips.append(f'<div class="hero-metric"><span class="num">{_fmt(mtb,0)}</span>'
+                     f'<label>Metabolic score</label></div>')
+    st = _top_streak(c)
+    if st:
+        chips.append(f'<div class="hero-metric hero-streak"><span class="num">🔥 {st["current"]}</span>'
+                     f'<label>{_esc(st["label"])}</label></div>')
+
     return (f'<div class="hero">{gr}'
-            f'<div class="hero-body"><div class="hero-headline">{_esc(headline)}</div>'
-            f'{sc}<div class="hero-metrics">{tir_html}{mtb_html}</div>'
+            f'<div class="hero-body">'
+            f'<div class="hero-headline">{_esc(headline)}</div>'
+            f'{gauge}'
+            f'<div class="hero-metrics">{"".join(chips)}</div>'
             f'{f"<p class=hero-lead>{_esc(lead)}</p>" if lead else ""}</div></div>')
+
+
+def _moves_card(c) -> str:
+    """'Today's moves' — the prescriptive layer: 2-3 grounded actions, highest leverage first."""
+    ms = c.get("coach") or []
+    if not ms:
+        return ""
+    rows = "".join(
+        f'<div class="move move-p{m.get("priority", 2)}">'
+        f'<div class="move-impact">{_esc(m.get("impact"))}</div>'
+        f'<div class="move-body"><div class="move-title">{_esc(m.get("title"))}</div>'
+        f'<div class="move-detail">{_esc(m.get("detail"))}</div></div></div>' for m in ms)
+    return ('<div class="moves"><div class="moves-h">Today\'s moves '
+            '<span class="muted">· from your own data</span></div>'
+            f'{rows}</div>')
 
 
 def _today_tab(c) -> str:
@@ -416,7 +475,7 @@ def _today_tab(c) -> str:
                            source="daily",
                            freshness=_date_dot(d, gen_at, stale_days=stale_days),
                            accent=_color_of(field)))
-    return _hero(c) + '<div class="grid">' + "".join(tiles) + "</div>"
+    return _hero(c) + _moves_card(c) + '<div class="grid">' + "".join(tiles) + "</div>"
 
 
 def _status_dot(status) -> str:
@@ -526,7 +585,38 @@ def _labs_html(labs) -> str:
     for group, markers in groups.items():
         rows = "".join(_lab_row(m) for m in markers)
         out.append(f'<div class="lab-group"><div class="lg-title">{_esc(group)}</div>{rows}</div>')
+    derived = labs.get("derived") or []
+    if derived:
+        chips = "".join(
+            f'<div class="ins-card"><div class="ins-title">{_esc(d["name"])} '
+            f'<span style="color:{STATUS_COLORS.get(d["status"], "#8a99b0")}">●</span></div>'
+            f'<div class="ins-big num">{d["value"]:g}{_esc(d.get("unit") or "")}</div>'
+            f'<div class="ins-detail">{_esc(d.get("note"))}</div></div>' for d in derived)
+        out.append('<h3 class="sec">Derived liver scores</h3>'
+                   f'<div class="insight-grid">{chips}</div>')
     return "".join(out)
+
+
+def _weight_html(w) -> str:
+    if not w or not w.get("ok"):
+        return ""
+    bmi = f' · BMI {w["bmi"]:g}' if w.get("bmi") is not None else ""
+    return (f'<h3 class="sec">Weight — your strongest lever</h3>'
+            f'<div class="rev-hero"><div class="rev-gmi"><span class="num">{w["kg_lost"]:+.1f}</span>'
+            f'<label>kg from baseline ({w["baseline_kg"]:g} → {w["current_kg"]:g} kg{bmi})</label></div>'
+            f'<div class="rev-prog"><div class="score-bar big">'
+            f'<i style="width:{min(100, w["remission_band_pct"]):.0f}%;background:#199e70"></i></div>'
+            f'<div class="muted">DiRECT remission likelihood at this loss ≈ '
+            f'<b>{w["remission_band_pct"]}%</b> · {_esc(w["note"])}</div></div></div>')
+
+
+def _reconcile_html(rc) -> str:
+    if not rc or not rc.get("ok"):
+        return ""
+    cls = "bad" if rc.get("discordant") else "good"
+    return (f'<div class="proj {cls}"><div class="proj-main">CGM estimate (GMI '
+            f'<b>{rc["gmi_pct"]:.1f}%</b>) vs lab HbA1c (<b>{rc["lab_hba1c_pct"]:.1f}%</b>) — '
+            f'gap {rc["gap_pct"]:+.1f}%</div><div class="muted">{_esc(rc["note"])}</div></div>')
 
 
 def _reversal_tab(c) -> str:
@@ -537,6 +627,8 @@ def _reversal_tab(c) -> str:
                 'lab panel) are flowing — it shows your GMI remission ladder, a 90-day projection, '
                 'your liver/inflammation/hormone labs, and the short list for your doctor.</p>')
     parts = ['<h3 class="sec">Remission ladder</h3>', _ladder_html(rev.get("ladder", {})),
+             _reconcile_html(rev.get("reconcile", {})),
+             _weight_html(rev.get("weight", {})),
              '<h3 class="sec">90-day GMI projection</h3>', _projection_html(rev.get("projection", {})),
              _doctor_html(rev.get("doctor_list", [])), _labs_html(labs)]
     return "".join(parts)
@@ -580,12 +672,87 @@ def _corr_card(f) -> str:
     chip = _rho_color(r)
     arrow = "↑" if f.get("direction") == "+" else "↓"
     kind = {"same-day": "same-day", "lag-1": "next-day", "lever": "on/off"}.get(f.get("kind"), "")
+    ci = f.get("ci")
+    ci_html = (f'<span class="corr-ci">95% CI {ci[0]:+.2f}…{ci[1]:+.2f}</span>'
+               if ci and ci[0] is not None else "")
+    sig = ('<span class="pill pill-sig">significant</span>' if f.get("significant")
+           else '<span class="pill pill-exp">exploratory</span>')
     return (f'<div class="corr-card">'
             f'<div class="corr-r" style="background:{chip}">{arrow} {r:+.2f}</div>'
             f'<div class="corr-body"><div class="corr-lbl">{_esc(f.get("label"))}</div>'
-            f'<div class="corr-meta"><span class="pill">{_esc(kind)}</span>'
-            f'<span class="pill">{_esc(f.get("strength"))}</span>'
-            f'<span class="corr-n">{_esc(f.get("detail"))}</span></div></div></div>')
+            f'<div class="corr-meta"><span class="pill">{_esc(kind)}</span>{sig}'
+            f'<span class="corr-n">{_esc(f.get("detail"))}</span>{ci_html}</div></div></div>')
+
+
+def _level_color(v):
+    """Glucose level -> in-range green / high amber / very-high red (for daypart bars)."""
+    if v is None:
+        return "#334155"
+    if v <= 140:
+        return "#2ea043"
+    if v <= 180:
+        return "#d9a021"
+    return "#e5484d"
+
+
+def _patterns_tab(c) -> str:
+    p = c.get("patterns") or {}
+    tod, dawn, wk, tr = (p.get("time_of_day") or {}), (p.get("dawn") or {}), \
+        (p.get("weekday") or {}), (p.get("trend") or {})
+    if not tod.get("parts") and not tr.get("ok"):
+        return ('<p class="muted">Patterns emerge once a couple of weeks of glucose are in. '
+                'They show when your day runs high, whether dawn is driving the morning, and the '
+                'week your control turned.</p>')
+    out = []
+    # trend banner — the single most motivating pattern
+    if tr.get("ok"):
+        dirn = tr["direction"]
+        cls = {"improving": "good", "worsening": "bad", "flat": ""}.get(dirn, "")
+        arrow = {"improving": "↓", "worsening": "↑", "flat": "→"}.get(dirn, "→")
+        drop = (f' The biggest single-week improvement was the week of {_esc(tr["biggest_drop_week"])} '
+                f'({tr["biggest_weekly_drop_mgdl"]:+.0f} mg/dL).' if tr.get("biggest_drop_week") else "")
+        out.append(
+            f'<div class="proj {cls}"><div class="proj-main">{arrow} Average glucose is '
+            f'<b>{dirn}</b> — {tr["overall_change_mgdl"]:+.0f} mg/dL over {tr["n_weeks"]} weeks.</div>'
+            f'<div class="muted">{drop.strip() or "Keep the streak going."}</div></div>')
+    # time-of-day bars (typical day)
+    parts = tod.get("parts") or []
+    if parts:
+        mx = max((p2["median_mgdl"] for p2 in parts), default=1) or 1
+        worst = (tod.get("worst") or {}).get("window")
+        rows = "".join(
+            f'<div class="tod-row"><span class="tod-lbl">{_esc(p2["window"])}'
+            f'<small>{_esc(p2["hours"])}</small></span>'
+            f'<span class="tod-bar"><i style="width:{100*p2["median_mgdl"]/mx:.0f}%;'
+            f'background:{_level_color(p2["median_mgdl"])}"></i></span>'
+            f'<span class="tod-val">{p2["median_mgdl"]:.0f}'
+            f'{" ◂ worst" if p2["window"] == worst else ""}</span></div>' for p2 in parts)
+        out.append('<h3 class="sec">Your typical day</h3>'
+                   '<p class="muted">Median glucose by part of day (Asia/Dubai).</p>'
+                   f'<div class="tod">{rows}</div>')
+    # dawn + weekday insight cards
+    cards = []
+    if dawn.get("delta_mgdl") is not None:
+        d = dawn["delta_mgdl"]
+        verdict = ("a clear dawn phenomenon" if dawn.get("present")
+                   else "little dawn effect")
+        cards.append(_insight_card("Dawn effect", f"{d:+.0f} mg/dL",
+                     f"04:00–08:00 runs {d:+.0f} vs the small hours — {verdict}."))
+    if wk.get("ok"):
+        wm = wk.get("weekend_minus_weekday")
+        hi, lo = wk.get("highest", {}), wk.get("lowest", {})
+        detail = (f'Weekends run {wm:+.0f} mg/dL vs weekdays. ' if wm is not None else "")
+        detail += f'Highest {hi.get("day")} ({hi.get("mean_mgdl"):.0f}), lowest {lo.get("day")} ({lo.get("mean_mgdl"):.0f}).'
+        cards.append(_insight_card("Day of week", (f"{wm:+.0f} mg/dL" if wm is not None else hi.get("day", "—")), detail))
+    if cards:
+        out.append('<h3 class="sec">Signals</h3><div class="insight-grid">' + "".join(cards) + "</div>")
+    return "".join(out)
+
+
+def _insight_card(title, big, detail) -> str:
+    return (f'<div class="ins-card"><div class="ins-title">{_esc(title)}</div>'
+            f'<div class="ins-big num">{_esc(big)}</div>'
+            f'<div class="ins-detail">{_esc(detail)}</div></div>')
 
 
 def _correlations_tab(c) -> str:
@@ -594,8 +761,11 @@ def _correlations_tab(c) -> str:
     if not findings and not corr.get("matrix"):
         return ('<p class="muted">Correlations need several days across multiple streams. '
                 'Once glucose, sleep, activity and your journal overlap, associations appear here.</p>')
+    nsig = corr.get("n_significant", 0)
     note = ('<p class="muted">Associations across everything you log — <b>observational, not '
-            'causal</b>. Each carries its sample size; weak/tiny-sample links are hidden.</p>')
+            'causal</b>. Each carries a 95% confidence interval; '
+            f'<b>{nsig}</b> survive multiple-comparison control (Benjamini-Hochberg, FDR 10%) '
+            'and are marked <b>significant</b> — the rest are <b>exploratory</b> leads.</p>')
     cards = ('<div class="corr-cards">' + "".join(_corr_card(f) for f in findings) + "</div>"
              if findings else '<p class="muted">No association cleared the evidence floor yet.</p>')
     heat = _heatmap(corr["matrix"], HEATMAP_FIELDS) if corr.get("matrix") else ""
@@ -632,27 +802,58 @@ def _analytics_tab(c) -> str:
     return f'<div class="winbar">{buttons}</div>' + "".join(panels)
 
 
+def _empty(title, body) -> str:
+    """A designed empty state (ghost card), not a stranded line of gray text."""
+    return (f'<div class="empty"><div class="empty-glyph">◒</div>'
+            f'<div class="empty-title">{_esc(title)}</div>'
+            f'<div class="empty-body">{_esc(body)}</div></div>')
+
+
 def _food_tab(c) -> str:
-    if not c["food_ranking"]:
-        return "<p>No foods with n≥3 yet.</p>"
-    rows = "".join(
-        f"<tr><td>{_esc(f['item'])}</td><td>{_fmt(f.get('mean_delta_peak_mgdl'),0)}</td>"
-        f"<td>{_fmt(f.get('mean_iauc_120'),0)}</td><td>{_esc(f.get('n'))}</td></tr>"
-        for f in c["food_ranking"])
-    return ('<table><thead><tr><th>Food</th><th>Δpeak (mg/dL)</th><th>iAUC</th>'
-            f'<th>n</th></tr></thead><tbody>{rows}</tbody></table>')
+    foods = c["food_ranking"]
+    if not foods:
+        return _empty("No foods ranked yet",
+                      "Log a few meals with net carbs and a tag. Once a food has 3+ logged "
+                      "meals, its glucose impact (peak rise, iAUC, time-to-peak) appears here, "
+                      "worst-to-best.")
+    mx = max((abs(f.get("mean_delta_peak_mgdl") or 0) for f in foods), default=1) or 1
+    cards = []
+    for f in foods:
+        dp = f.get("mean_delta_peak_mgdl")
+        col = _level_color((dp or 0) + 90)   # map Δpeak onto the green/amber/red scale
+        cards.append(
+            f'<div class="frow"><div class="frow-top"><span class="frow-name">{_esc(f["item"])}</span>'
+            f'<span class="frow-dp num">+{_fmt(dp,0)}<small> mg/dL</small></span></div>'
+            f'<div class="frow-bar"><i style="width:{100*abs(dp or 0)/mx:.0f}%;background:{col}"></i></div>'
+            f'<div class="frow-foot">iAUC {_fmt(f.get("mean_iauc_120"),0)} · '
+            f'{_esc(f.get("n"))} meals</div></div>')
+    return ('<p class="muted">Your foods ranked by average glucose peak — worst first.</p>'
+            '<div class="frows">' + "".join(cards) + "</div>")
 
 
 def _experiments_tab(c) -> str:
-    if not c["experiments"]:
-        return "<p>No interventions logged.</p>"
-    rows = "".join(
-        f"<tr><td>{_esc(e['tag'])}</td><td>{_fmt(e.get('effect_abs'),0)}</td>"
-        f"<td>{_fmt(e.get('effect_pct'),0)}%</td><td>{_esc(e.get('n_treated'))}/"
-        f"{_esc(e.get('n_control'))}</td><td>{_esc(e.get('signal_strength'))}</td>"
-        f"<td>{_esc(e.get('causal_label'))}</td></tr>" for e in c["experiments"])
-    return ('<table><thead><tr><th>Tag</th><th>Effect</th><th>%</th><th>n T/C</th>'
-            f'<th>signal</th><th>causal?</th></tr></thead><tbody>{rows}</tbody></table>')
+    exps = c["experiments"]
+    if not exps:
+        return _empty("No interventions compared yet",
+                      "Tag meals with what you tried (+walk, +acv, +methi, veg-first…). The "
+                      "engine matches tagged vs untagged meals and reports the effect with its "
+                      "sample size — never labelling anything causal below the evidence floor.")
+    cards = []
+    for e in exps:
+        eff = e.get("effect_abs")
+        good = eff is not None and eff < 0
+        sign = "good" if good else ("bad" if (eff or 0) > 0 else "")
+        cards.append(
+            f'<div class="frow"><div class="frow-top">'
+            f'<span class="frow-name">{_esc(e["tag"])}</span>'
+            f'<span class="frow-dp num {sign}">{_fmt(eff,0)}<small> mg/dL '
+            f'({_fmt(e.get("effect_pct"),0)}%)</small></span></div>'
+            f'<div class="frow-foot"><span class="pill">{_esc(e.get("signal_strength"))}</span> '
+            f'<span class="pill">{_esc(e.get("causal_label"))}</span> '
+            f'n {_esc(e.get("n_treated"))} vs {_esc(e.get("n_control"))}</div></div>')
+    return ('<p class="muted">Matched-meal interventions (tagged vs untagged) — negative = '
+            'blunts the peak. Never called causal below the evidence floor.</p>'
+            '<div class="frows">' + "".join(cards) + "</div>")
 
 
 def _custom_card(card) -> str:
@@ -731,127 +932,217 @@ def _export_tab(c) -> str:
             '</pre></details>')
 
 
+_TOKENS = """
+:root{
+  --font-display:'Fraunces',Georgia,'Times New Roman',serif;
+  --font-body:'Geist',-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
+  --font-mono:'Geist Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --blue:#3987e5;--good:#2ea043;--warn:#d9a021;--crit:#e5484d;
+}
+"""
+
 _CSS = """
-*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;
-background:#0b0f1a;color:#e2e8f0;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{font-family:var(--font-body);font-feature-settings:'ss01','cv01';margin:0;
+background:#0a0e16;color:#eef2f9;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+padding-bottom:env(safe-area-inset-bottom)}
+.num,.t-value,.mono,.hdr-glucose,.spark-val,.lab-val,.hero-metric span,.hero-score span,
+.rev-gmi span,tspan{font-variant-numeric:tabular-nums lining-nums}
+h1,h2,.hero-headline,.hero-grade,.rev-gmi span,.hero-metric span{font-family:var(--font-display)}
+.t-value,.hero-score span,.corr-r,.lab-val,.spark-val,.hdr-glucose,.bar-val{font-family:var(--font-mono)}
+.t-title,.lg-title,.sub,.doc-area,.spark-foot,.card-filter,.t-foot{font-family:var(--font-mono);
+letter-spacing:.02em}
 /* one sticky block so the nav can never slide underneath the header */
-.topbar{position:sticky;top:0;z-index:6;background:#0b0f1acc;backdrop-filter:blur(8px);
-border-bottom:1px solid #1f2937}
+.topbar{position:sticky;top:0;z-index:6;background:#0a0e16e6;backdrop-filter:blur(10px);
+border-bottom:1px solid #1e2636;padding-top:env(safe-area-inset-top)}
+main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
 header{position:relative;padding:10px 16px}.hdr-glucose{font-size:22px;font-weight:700}
-.hdr-age{color:#94a3b8;font-size:13px}
-.refresh{position:absolute;top:10px;right:12px;background:#1f2937;color:#cbd5e1;border:0;
+.hdr-age{color:#9aa8bd;font-size:13px}
+.refresh{position:absolute;top:10px;right:12px;background:#1f2937;color:#c3d0e2;border:0;
 width:36px;height:36px;border-radius:10px;font-size:18px;cursor:pointer}
 .navwrap{position:relative}
 .navwrap::after{content:"";position:absolute;top:0;right:0;width:26px;height:100%;
-background:linear-gradient(90deg,transparent,#0b0f1a);pointer-events:none}
+background:linear-gradient(90deg,transparent,#0a0e16);pointer-events:none}
 nav{display:flex;gap:4px;padding:6px 12px;overflow-x:auto;scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
-nav button{background:#1f2937;color:#cbd5e1;border:0;padding:0 14px;min-height:44px;border-radius:8px;
-cursor:pointer;white-space:nowrap;font-size:14px}nav button.active{background:#3987e5;color:#fff}
+nav button{background:#1f2937;color:#c3d0e2;border:0;padding:0 14px;min-height:44px;border-radius:8px;
+cursor:pointer;white-space:nowrap;font-size:14px}nav button.active{background:#1f5fbf;color:#fff}
 nav button:focus-visible{outline:2px solid #3987e5;outline-offset:2px}
-#hhtip{position:fixed;display:none;z-index:20;max-width:180px;background:#1f2937;color:#e2e8f0;
+#hhtip{position:fixed;display:none;z-index:20;max-width:180px;background:#1f2937;color:#eef2f9;
 border:1px solid #334155;border-radius:8px;padding:6px 9px;font-size:12px;pointer-events:none}
 main{padding:16px;max-width:1100px;margin:0 auto}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
-.tile{background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:12px}
-.t-title{font-size:12px;color:#94a3b8}.t-value{font-size:24px;font-weight:700;margin:4px 0}
-.t-sub{font-size:12px;color:#cbd5e1}.t-foot{font-size:12px;color:#8091a7;margin-top:6px}
+.tile{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:12px}
+/* elevation/light model: top-lit gradient surfaces + ambient depth so cards float */
+.tile,.spark-card,.ins-card,.corr-card,.card,.lab-group,.moves,.proj,.doc-item,.rung,.ins-card{
+background-image:linear-gradient(180deg,#161d2e 0%,#111725 60%);
+box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 1px 2px rgba(0,0,0,.35),0 10px 26px rgba(0,0,0,.20)}
+.tile,.corr-card,nav button,.winbtn,.refresh,.xbtn{transition:transform .14s ease,
+background-color .14s ease,border-color .14s ease,box-shadow .14s ease}
+.tile:active,.corr-card:active{transform:scale(.992)}
+nav button:hover,.winbtn:hover{background-color:#26324a}
+.tab.active{animation:fadein .22s ease both}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.t-title{font-size:12px;color:#9aa8bd}.t-value{font-size:24px;font-weight:700;margin:4px 0}
+.t-sub{font-size:12px;color:#c3d0e2}.t-foot{font-size:12px;color:#8091a7;margin-top:6px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1f2937}
-h2{margin:4px 0 14px;font-size:20px}h3.sec{margin:22px 0 10px;font-size:15px;color:#cbd5e1;
+h2{margin:4px 0 14px;font-size:20px}h3.sec{margin:22px 0 10px;font-size:15px;color:#c3d0e2;
 border-left:3px solid #3987e5;padding-left:8px}
-.hero{display:flex;gap:16px;background:linear-gradient(135deg,#12161f,#161d2e);border:1px solid #1f2937;
-border-radius:18px;padding:18px;margin-bottom:16px;align-items:center}
-.hero-grade{font-size:44px;font-weight:800;width:72px;height:72px;border-radius:16px;display:flex;
-align-items:center;justify-content:center;background:#0b0f1a;flex:0 0 auto}
-.hero-body{flex:1}.hero-headline{font-size:17px;font-weight:600;margin-bottom:8px}
-.hero-score{display:flex;align-items:center;gap:10px;margin:6px 0}
-.hero-score span{font-size:22px;font-weight:700}.hero-score small{font-size:12px;color:#94a3b8}
-.score-bar{flex:1;height:8px;background:#0b0f1a;border-radius:6px;overflow:hidden}
-.score-bar i{display:block;height:100%;background:#199e70}
-.hero-metrics{display:flex;gap:20px;margin-top:8px}
-.hero-metric span{font-size:20px;font-weight:700}.hero-metric label{display:block;font-size:11px;color:#94a3b8}
-.hero-lead{color:#cbd5e1;font-size:13px;margin:10px 0 0}
-.grade-A{color:#0ca30c}.grade-B{color:#199e70}.grade-C{color:#fab219}.grade-D{color:#ec835a}.grade-F{color:#d03b3b}
-.winbar{margin-bottom:10px}.winbtn{background:#1f2937;color:#cbd5e1;border:0;margin-right:4px;
-padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#3987e5;color:#fff}
-.agp{width:100%;height:auto;background:#0b1220;border-radius:10px;margin:6px 0}
+.hero{display:flex;gap:18px;background:
+radial-gradient(120% 140% at 100% 0%,#17223a 0%,#0e1420 55%),linear-gradient(#0e1420,#0e1420);
+border:1px solid #24304a;border-radius:20px;padding:20px;margin-bottom:16px;align-items:flex-start;
+position:relative;overflow:hidden;animation:rise .5s ease both}
+.hero::after{content:"";position:absolute;inset:0;pointer-events:none;
+box-shadow:inset 0 1px 0 #ffffff12,inset 0 0 60px #3987e508}
+.hero-grade{font-size:46px;font-weight:600;width:76px;height:76px;border-radius:18px;display:flex;
+align-items:center;justify-content:center;background:#0a0e16;border:1px solid #24304a;flex:0 0 auto;
+line-height:1}
+.hero-body{flex:1;min-width:0}
+.hero-eyebrow{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+color:#8a99b0;margin-top:2px}
+.hero-headline{font-size:19px;font-weight:600;line-height:1.15;letter-spacing:-.01em;
+text-wrap:balance;margin:0 0 10px}
+.hero-gmi{display:flex;align-items:baseline;gap:6px;line-height:.9}
+.hero-gmi .num{font-family:var(--font-display);font-size:52px;font-weight:600;letter-spacing:-.02em;color:#eaf1fb}
+.hero-gmi-u{font-family:var(--font-mono);font-size:18px;color:#9aa8bd}
+.gauge{position:relative;height:9px;background:#0a0e16;border:1px solid #223049;border-radius:6px;
+overflow:hidden;margin:12px 0 6px}
+.gauge i{display:block;height:100%;width:var(--w);border-radius:6px;
+background:linear-gradient(90deg,#e5843f,#d9a021 45%,#2ea043);animation:fill .9s cubic-bezier(.2,.8,.2,1) both}
+.gauge-tick{position:absolute;top:-3px;width:2px;height:15px;background:#eaf1fb;border-radius:2px;transform:translateX(-1px)}
+.hero-cap{font-size:12.5px;color:#9aa8bd}
+.hero-metrics{display:flex;gap:22px;margin-top:14px;flex-wrap:wrap}
+.hero-metric .num{font-size:22px;font-weight:600}
+.hero-metric label{display:block;font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;
+text-transform:uppercase;color:#8a99b0;margin-top:2px}
+.hero-streak .num{color:#e5843f}
+.hero-lead{color:#c3d0e2;font-size:13.5px;line-height:1.5;margin:12px 0 0;
+border-top:1px solid #1e2636;padding-top:10px}
+.grade-A{color:#2ea043}.grade-B{color:#199e70}.grade-C{color:#d9a021}.grade-D{color:#e5843f}.grade-F{color:#e5484d}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes fill{from{width:0}}
+@media(prefers-reduced-motion:reduce){.hero,.gauge i{animation:none}}
+.winbar{margin-bottom:10px}.winbtn{background:#1f2937;color:#c3d0e2;border:0;margin-right:4px;
+padding:6px 10px;border-radius:8px;cursor:pointer}.winbtn.active{background:#1f5fbf;color:#fff}
+.agp{width:100%;height:auto;background:#0b111d;border-radius:10px;margin:6px 0}
 .agp-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;align-items:baseline;margin-top:8px}
 .agp-title{font-weight:600;font-size:13px}
 .agp-legend{font-size:11px;color:#8091a7;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .sw{display:inline-block;width:12px;height:10px;border-radius:2px;vertical-align:middle;margin-left:6px}
 .sw-band1{background:#3987e533}.sw-band2{background:#3987e566}
 .sw-med{background:#3987e5;height:3px}.sw-tgt{background:#19875440;border:1px dashed #199e70}
-.muted{color:#94a3b8;font-size:13px}.warn{color:#fab219}.insight{color:#cbd5e1;line-height:1.6;
-background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:12px}
+.muted{color:#9aa8bd;font-size:13px}.warn{color:#fab219}.insight{color:#c3d0e2;line-height:1.6;
+background:#111725;border:1px solid #1f2937;border-radius:12px;padding:12px}
 .tab{display:none}.tab.active{display:block}
-pre{white-space:pre-wrap;background:#0b1220;padding:8px;border-radius:8px}
+pre{white-space:pre-wrap;background:#0b111d;padding:8px;border-radius:8px}
 .sparks{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
-.spark-card{background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:10px 12px}
+.spark-card{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:10px 12px}
 .spark-head{display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:2px}
 .spark-head .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
-.spark-lbl{font-weight:600;color:#e2e8f0}.spark-val{margin-left:auto;font-weight:700;color:#e2e8f0}
+.spark-lbl{font-weight:600;color:#eef2f9}.spark-val{margin-left:auto;font-weight:700;color:#eef2f9}
 .spark{width:100%;height:48px;display:block}.spark-foot{font-size:12px;color:#8091a7;margin-top:2px}
 .corr-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
-.corr-card{display:flex;gap:12px;background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:10px 12px}
+.corr-card{display:flex;gap:12px;background:#111725;border:1px solid #1f2937;border-radius:14px;padding:10px 12px}
 .corr-r{flex:0 0 auto;align-self:flex-start;font-weight:700;color:#fff;border-radius:10px;padding:6px 10px;font-size:13px}
 .corr-lbl{font-weight:600;line-height:1.35}.corr-meta{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
-.pill{background:#1f2937;color:#cbd5e1;border-radius:20px;padding:2px 9px;font-size:11px}
+.pill{background:#1f2937;color:#c3d0e2;border-radius:20px;padding:2px 9px;font-size:11px}
 .corr-n{color:#8091a7;font-size:12px}
+.corr-ci{color:#8a99b0;font-size:11px;font-family:var(--font-mono)}
+.pill-sig{background:#12351f;color:#5bd47e;border:1px solid #2ea04355}
+.pill-exp{background:#241a10;color:#e0b365;border:1px solid #d9a02144}
 .heatwrap{position:relative;overflow-x:auto;padding-bottom:4px}
 .heatwrap::after{content:"";position:absolute;top:0;right:0;width:22px;height:100%;
-background:linear-gradient(90deg,transparent,#0b0f1a);pointer-events:none}
-.heatmap{display:grid;grid-template-columns:84px repeat(var(--n),minmax(26px,1fr));gap:2px;min-width:min-content}
-.hm-row{display:contents}.hm-cell{aspect-ratio:1;display:flex;align-items:center;justify-content:center;
-font-size:11px;color:#e2e8f0;border-radius:3px;min-width:26px;cursor:pointer}
-.hm-corner{background:transparent}
-.hm-col{background:transparent;color:#94a3b8;font-size:10px;aspect-ratio:auto;align-items:flex-end;
-white-space:nowrap;line-height:1.05}
-.hm-rowlbl{background:transparent;color:#cbd5e1;justify-content:flex-end;padding-right:6px;font-size:11px;
+background:linear-gradient(90deg,transparent,#0a0e16);pointer-events:none}
+.heatmap{display:grid;grid-template-columns:92px repeat(var(--n),minmax(30px,1fr));gap:3px;min-width:min-content}
+.hm-row{display:contents}
+.hm-cell{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:11px;
+color:#eef2f9;border-radius:4px;min-width:30px;cursor:pointer;font-variant-numeric:tabular-nums;
+box-shadow:inset 0 0 0 1px rgba(255,255,255,.03)}
+.hm-corner{background:transparent;box-shadow:none}
+.hm-col{background:transparent;color:#9aa8bd;font-size:11px;aspect-ratio:auto;align-items:flex-end;
+white-space:nowrap;line-height:1.05;box-shadow:none}
+.hm-rowlbl{background:transparent;color:#c3d0e2;justify-content:flex-end;padding-right:6px;font-size:11px;
 aspect-ratio:auto;white-space:nowrap}
-.hm-legend{display:flex;align-items:center;gap:8px;margin-top:10px;color:#94a3b8;font-size:12px}
+.hm-legend{display:flex;align-items:center;gap:8px;margin-top:10px;color:#9aa8bd;font-size:12px}
 .hm-legend i{display:inline-block;width:120px;height:10px;border-radius:5px}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
-.card{background:#12161f;border:1px solid #1f2937;border-radius:14px;padding:12px}
+.card{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:12px}
 .card-title{font-weight:700}.card-filter{font-size:12px;color:#8091a7;margin:4px 0 8px}
 .bar-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
-.bar-lbl{flex:0 0 130px;color:#cbd5e1}.bar{flex:1;background:#0b1220;border-radius:6px;height:12px;overflow:hidden}
-.bar i{display:block;height:100%;background:#3987e5}.bar-val{flex:0 0 56px;text-align:right;color:#e2e8f0}
+.bar-lbl{flex:0 0 130px;color:#c3d0e2}.bar{flex:1;background:#0b111d;border-radius:6px;height:12px;overflow:hidden}
+.bar i{display:block;height:100%;background:#3987e5}.bar-val{flex:0 0 56px;text-align:right;color:#eef2f9}
 .cov .bar-lbl{flex:0 0 150px}
 .card-assess{font-size:12px;color:#a5b4fc;margin-top:8px}
 .review-head{display:flex;gap:14px;align-items:center;margin-bottom:8px}
 .rgrade{font-size:34px;font-weight:800;width:56px;height:56px;border-radius:14px;display:flex;
-align-items:center;justify-content:center;background:#12161f}
+align-items:center;justify-content:center;background:#111725}
 .review-lines{line-height:1.7}
 .heartbeat{margin-top:6px;font-size:12px;display:flex;flex-wrap:nowrap;overflow-x:auto;gap:6px;
 align-items:center;scrollbar-width:none}.heartbeat::-webkit-scrollbar{display:none}
 .heartbeat.hb-bad{color:#fab219}.heartbeat.hb-ok{color:#199e70}
 .hb{white-space:nowrap}
-.hb{background:#1f2937;border-radius:10px;padding:2px 8px;color:#cbd5e1}
+.hb{background:#1f2937;border-radius:10px;padding:2px 8px;color:#c3d0e2}
 .hb-fresh{border:1px solid #199e70}.hb-stale{border:1px solid #fab219;color:#fbbf24}
 .hb-down,.hb-no_data,.hb-future{border:1px solid #d03b3b;color:#fca5a5}
 .xbtn{display:inline-block;background:#3987e5;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700}
-.rev-hero{display:flex;gap:20px;align-items:center;background:linear-gradient(135deg,#12161f,#161d2e);
+.moves{margin:0 0 16px;background:#0e1524;border:1px solid #223049;border-radius:16px;padding:14px 16px}
+.moves-h{font-family:var(--font-display);font-size:16px;margin-bottom:10px}
+.move{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid #182238}
+.move:first-of-type{border-top:0}
+.move-impact{flex:0 0 auto;min-width:74px;font-family:var(--font-mono);font-size:12px;font-weight:600;
+color:#eaf1fb;background:#16233b;border:1px solid #263a5c;border-radius:8px;padding:6px 8px;text-align:center}
+.move-p1 .move-impact{border-color:#2ea04366;color:#7ee0a0}
+.move-title{font-weight:600;font-size:14.5px;margin-bottom:2px}
+.move-detail{font-size:13px;color:#c3d0e2;line-height:1.5}
+.tod{display:flex;flex-direction:column;gap:8px;margin:6px 0}
+.tod-row{display:flex;align-items:center;gap:10px;font-size:13px}
+.tod-lbl{flex:0 0 120px;display:flex;flex-direction:column}.tod-lbl small{color:#8a99b0;font-family:var(--font-mono);font-size:10px}
+.tod-bar{flex:1;height:14px;background:#0a0e16;border:1px solid #1e2636;border-radius:7px;overflow:hidden}
+.tod-bar i{display:block;height:100%;border-radius:7px}
+.tod-val{flex:0 0 84px;text-align:right;font-family:var(--font-mono);font-weight:600}
+.frows{display:flex;flex-direction:column;gap:10px}
+.frow{background-image:linear-gradient(180deg,#161d2e,#111725);border:1px solid #1f2937;
+border-radius:12px;padding:11px 13px}
+.frow-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.frow-name{font-weight:600;font-size:14.5px}
+.frow-dp{font-family:var(--font-mono);font-weight:600}.frow-dp small{color:#8a99b0;font-weight:400}
+.frow-dp.good{color:#5bd47e}.frow-dp.bad{color:#f0a072}
+.frow-bar{height:8px;background:#0a0e16;border:1px solid #1e2636;border-radius:5px;overflow:hidden;margin:8px 0 6px}
+.frow-bar i{display:block;height:100%;border-radius:5px}
+.frow-foot{font-family:var(--font-mono);font-size:11.5px;color:#8a99b0;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.empty{text-align:center;border:1.5px dashed #2a3654;border-radius:16px;padding:34px 22px;background:#0d1320}
+.empty-glyph{font-size:34px;color:#3b4a68;line-height:1}
+.empty-title{font-family:var(--font-display);font-size:18px;margin:10px 0 6px}
+.empty-body{color:#9aa8bd;font-size:13.5px;line-height:1.55;max-width:44ch;margin:0 auto}
+.insight-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.ins-card{background:#111725;border:1px solid #1f2937;border-radius:14px;padding:14px}
+.ins-title{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a99b0}
+.ins-big{font-family:var(--font-display);font-size:30px;letter-spacing:-.01em;margin:4px 0 6px}
+.ins-detail{font-size:13px;color:#c3d0e2;line-height:1.5}
+.rev-hero{display:flex;gap:20px;align-items:center;background:linear-gradient(135deg,#111725,#161d2e);
 border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex-wrap:wrap}
-.rev-gmi span{font-size:40px;font-weight:800;color:#3987e5}.rev-gmi label{display:block;font-size:11px;color:#94a3b8}
+.rev-gmi span{font-size:40px;font-weight:800;color:#3987e5}.rev-gmi label{display:block;font-size:11px;color:#9aa8bd}
 .rev-prog{flex:1;min-width:220px}.score-bar.big{height:12px}
-.rev-next{margin:8px 0 0;font-size:14px;color:#cbd5e1}.rev-next.good{color:#0ca30c}
+.rev-next{margin:8px 0 0;font-size:14px;color:#c3d0e2}.rev-next.good{color:#0ca30c}
 .rungs{display:flex;flex-direction:column;gap:6px;margin-bottom:6px}
-.rung{display:flex;align-items:center;gap:10px;background:#12161f;border:1px solid #1f2937;border-radius:10px;padding:8px 12px;font-size:13px}
+.rung{display:flex;align-items:center;gap:10px;background:#111725;border:1px solid #1f2937;border-radius:10px;padding:8px 12px;font-size:13px}
 .rung.done{border-color:#0ca30c55;background:#0ca30c11}.rung .rk{font-weight:700;color:#8091a7;flex:0 0 auto}
-.rung.done .rk{color:#0ca30c}.rung .rl{flex:1}.rung .rm{color:#94a3b8;font-size:12px}
-.proj{background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:12px}
+.rung.done .rk{color:#0ca30c}.rung .rl{flex:1}.rung .rm{color:#9aa8bd;font-size:12px}
+.proj{background:#111725;border:1px solid #1f2937;border-radius:12px;padding:12px}
 .proj.good{border-left:3px solid #0ca30c}.proj.bad{border-left:3px solid #d03b3b}
 .proj-main{font-size:15px;margin-bottom:4px}
 .doc-list{display:flex;flex-direction:column;gap:8px}
-.doc-item{display:flex;gap:10px;background:#12161f;border:1px solid #1f2937;border-radius:12px;padding:10px 12px}
+.doc-item{display:flex;gap:10px;background:#111725;border:1px solid #1f2937;border-radius:12px;padding:10px 12px}
 .doc-item.p1{border-left:3px solid #d03b3b}.doc-item.p2{border-left:3px solid #fab219}
-.doc-area{flex:0 0 84px;font-size:11px;color:#94a3b8;text-transform:uppercase;padding-top:2px}
+.doc-area{flex:0 0 84px;font-size:11px;color:#9aa8bd;text-transform:uppercase;padding-top:2px}
 .doc-text{font-weight:600}
-.lab-group{margin-bottom:14px}.lg-title{font-size:12px;color:#94a3b8;text-transform:uppercase;margin:8px 0 4px}
+.lab-group{margin-bottom:14px}.lg-title{font-size:12px;color:#9aa8bd;text-transform:uppercase;margin:8px 0 4px}
 .lab{display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid #1f2937;font-size:13px}
 .sdot{width:10px;height:10px;border-radius:50%;flex:0 0 auto}
-.lab-name{flex:0 0 130px;font-weight:600}.lab-val{flex:0 0 92px;font-weight:700}.lab-val small{color:#94a3b8;font-weight:400}
-.lab-ref{flex:0 0 84px;color:#94a3b8;font-size:12px}
+.lab-name{flex:0 0 130px;font-weight:600}.lab-val{flex:0 0 92px;font-weight:700}.lab-val small{color:#9aa8bd;font-weight:400}
+.lab-ref{flex:0 0 84px;color:#9aa8bd;font-size:12px}
 .ldelta{font-size:12px;flex:0 0 auto}.ldelta.good{color:#0ca30c}.ldelta.bad{color:#d03b3b}
 .lab-spark{flex:1;min-width:70px;max-width:150px}.lab-spark .spark{height:30px}
 .lstat{flex:0 0 auto;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
@@ -860,13 +1151,28 @@ border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex
 """
 
 _JS = """
-function showTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+var HH_SCROLL={};
+function showTab(name,fromNav){
+var cur=document.querySelector('.tab.active');if(cur)HH_SCROLL[cur.id]=window.scrollY;
+document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
 var sec=document.getElementById('tab-'+name);if(!sec)return;sec.classList.add('active');
 document.querySelectorAll('nav button').forEach(function(b){b.classList.remove('active');
-b.setAttribute('aria-selected','false');});
+b.setAttribute('aria-selected','false');b.tabIndex=-1;});
 var nb=document.getElementById('navbtn-'+name);if(nb){nb.classList.add('active');
-nb.setAttribute('aria-selected','true');nb.scrollIntoView({block:'nearest',inline:'center'});}
-if(history.replaceState)history.replaceState(null,'','#'+name);window.scrollTo(0,0);}
+nb.setAttribute('aria-selected','true');nb.tabIndex=0;nb.scrollIntoView({block:'nearest',inline:'center'});}
+// user taps push history (Back returns to the previous tab); programmatic opens replace
+if(fromNav&&history.pushState)history.pushState({tab:name},'','#'+name);
+else if(history.replaceState)history.replaceState({tab:name},'','#'+name);
+window.scrollTo(0,HH_SCROLL['tab-'+name]||0);}
+window.addEventListener('popstate',function(e){var n=(e.state&&e.state.tab)||(location.hash||'').slice(1);
+if(n&&document.getElementById('tab-'+n))showTab(n);});
+// keyboard: arrow-key roving focus across the tablist (WAI-ARIA tabs pattern)
+document.addEventListener('keydown',function(e){
+if(!e.target.matches('nav button'))return;var btns=[].slice.call(document.querySelectorAll('nav button'));
+var i=btns.indexOf(e.target),j=i;
+if(e.key==='ArrowRight')j=(i+1)%btns.length;else if(e.key==='ArrowLeft')j=(i-1+btns.length)%btns.length;
+else if(e.key==='Home')j=0;else if(e.key==='End')j=btns.length-1;else return;
+e.preventDefault();btns[j].focus();btns[j].click();});
 function showWindow(w){document.querySelectorAll('.winpanel').forEach(p=>p.style.display='none');
 var el=document.getElementById('winpanel-'+w);if(el)el.style.display='block';
 document.querySelectorAll('.winbtn').forEach(b=>b.classList.remove('active'));
@@ -881,6 +1187,16 @@ t.style.display='block';clearTimeout(window._tt);window._tt=setTimeout(function(
 document.addEventListener('click',hhTip);
 // open the tab named in the URL hash (deep-link / PWA reopen)
 (function(){var h=(location.hash||'').slice(1);if(h&&document.getElementById('tab-'+h))showTab(h);})();
+// restrained count-up on hero figures (skipped for reduced-motion)
+(function(){
+if(window.matchMedia&&matchMedia('(prefers-reduced-motion:reduce)').matches)return;
+document.querySelectorAll('[data-count]').forEach(function(el){
+  var end=parseFloat(el.getAttribute('data-count'));if(isNaN(end))return;
+  var dec=(el.getAttribute('data-count').split('.')[1]||'').length,t0=null,dur=850;
+  function step(ts){if(!t0)t0=ts;var k=Math.min(1,(ts-t0)/dur);var e=1-Math.pow(1-k,3);
+    el.textContent=(end*e).toFixed(dec);if(k<1)requestAnimationFrame(step);else el.textContent=end.toFixed(dec);}
+  el.textContent=(0).toFixed(dec);requestAnimationFrame(step);
+});})();
 """
 
 # Recompute the glucose age + freshness on the DEVICE clock, so an offline PWA never shows a
@@ -936,22 +1252,37 @@ def render(cockpit: dict) -> str:
 
     bodies = {
         "Today": _today_tab(cockpit), "Reversal": _reversal_tab(cockpit),
-        "Trends": _trends_tab(cockpit), "Correlations": _correlations_tab(cockpit),
+        "Trends": _trends_tab(cockpit), "Patterns": _patterns_tab(cockpit),
+        "Correlations": _correlations_tab(cockpit),
         "Analytics": _analytics_tab(cockpit), "Food": _food_tab(cockpit),
         "Experiments": _experiments_tab(cockpit), "Custom": _custom_tab(cockpit),
         "Review": _review_tab(cockpit), "Export": _export_tab(cockpit),
     }
     nav = "".join(f'<button id="navbtn-{t}" role="tab" '
                   f'aria-selected="{"true" if i==0 else "false"}" '
+                  f'aria-controls="tab-{t}" tabindex="{"0" if i==0 else "-1"}" '
                   f'class="{"active" if i==0 else ""}" '
-                  f'onclick="showTab(\'{t}\')">{t}</button>' for i, t in enumerate(TABS))
-    tabs = "".join(f'<section id="tab-{t}" role="tabpanel" class="tab {"active" if i==0 else ""}">'
+                  f'onclick="showTab(\'{t}\',1)">{t}</button>' for i, t in enumerate(TABS))
+    tabs = "".join(f'<section id="tab-{t}" role="tabpanel" aria-labelledby="navbtn-{t}" '
+                   f'tabindex="0" class="tab {"active" if i==0 else ""}">'
                    f'<h2>{t}</h2>{bodies[t]}</section>' for i, t in enumerate(TABS))
+    # CSP is a load-bearing control, not a claim: everything is inlined/same-origin, so lock the
+    # page to its own origin + data-URI fonts and forbid any external fetch. (§A: no external hosts.)
+    csp = ("default-src 'none'; base-uri 'none'; img-src 'self' data:; font-src data:; "
+           "style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; "
+           "manifest-src 'self'; worker-src 'self'; form-action 'none'")
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<meta name="theme-color" content="#0b0f1a">'
+            f'<meta http-equiv="Content-Security-Policy" content="{csp}">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+            f'<meta name="theme-color" content="#0a0e16">'
+            f'<meta name="apple-mobile-web-app-capable" content="yes">'
+            f'<meta name="mobile-web-app-capable" content="yes">'
+            f'<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+            f'<meta name="apple-mobile-web-app-title" content="Health OS">'
+            f'<meta name="color-scheme" content="dark">'
             f'<link rel="manifest" href="manifest.json">'
-            f'<title>HealthHub</title><style>{_CSS}</style></head><body>'
+            f'<link rel="apple-touch-icon" href="icon-192.png">'
+            f'<title>Health OS</title><style>{assets.FONT_CSS}{_TOKENS}{_CSS}</style></head><body>'
             f'<div class="topbar"><header>{hdr}{banner}</header>'
             f'<div class="navwrap"><nav role="tablist" aria-label="Sections">{nav}</nav></div></div>'
             f'<main>{tabs}</main>'

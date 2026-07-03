@@ -162,3 +162,27 @@ def test_mood_energy_analyze(st):
     assert len(res["correlations"]) == 6  # mood/energy x mean/tir/cv
     assert all(c["n"] >= 0 for c in res["correlations"])
     assert mood_energy.self_check(res) == []
+
+
+# ---- statutil inference (CI, FDR) --------------------------------------------------
+def test_fisher_ci_and_p():
+    fs = statutil.fisher(0.8, 30)
+    assert fs["ci"][0] is not None and fs["ci"][0] < 0.8 < fs["ci"][1]
+    assert 0.0 <= fs["p"] <= 1.0 and fs["p"] < 0.01      # strong corr, n=30 -> significant
+    assert statutil.fisher(None, 30)["p"] is None
+    assert statutil.fisher(0.5, 4)["p"] is None          # n too small
+
+
+def test_bh_fdr_controls_discoveries():
+    # one real signal (p=0.001) among noise -> only the real one survives at q=0.10
+    ps = [0.001, 0.20, 0.40, 0.60, 0.80]
+    sig = statutil.bh_fdr(ps, q=0.10)
+    assert sig == [True, False, False, False, False]
+    assert statutil.bh_fdr([], q=0.1) == []
+    assert statutil.bh_fdr([None, None]) == [False, False]
+
+
+def test_cohens_d_ci_brackets_estimate():
+    d = statutil.cohens_d([5, 6, 7, 8], [1, 2, 3, 4])
+    ci = statutil.cohens_d_ci(d, 4, 4)["ci"]
+    assert ci[0] is not None and ci[0] < d < ci[1]

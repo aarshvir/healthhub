@@ -60,3 +60,19 @@ def test_apps_script_present_with_schema_headers():
     for col in ("entry_id", "net_carbs_g", "mood_1to5", "symptom_sev_1to5", "tags"):
         assert col in code
     assert "setWebhook" in code  # setup instructions included
+
+
+def test_csp_and_ios_metas_present():
+    """§A: the 'no external hosts' control is enforced by a strict CSP, not just claimed;
+    iOS standalone metas + a real apple-touch-icon make install work."""
+    import build_dashboard
+    cockpit = build_dashboard.build_cockpit(metrics={}, trend_by_window={}, latest_glucose=None)
+    html = build_dashboard.render(cockpit)
+    assert "Content-Security-Policy" in html and "default-src 'none'" in html
+    assert "connect-src 'self'" in html and "font-src data:" in html
+    assert "apple-mobile-web-app-capable" in html and 'rel="apple-touch-icon"' in html
+
+
+def test_pwa_icons_exist():
+    for name in ("icon-192.png", "icon-512.png", "icon-maskable-512.png"):
+        assert (PWA / name).exists() and (PWA / name).stat().st_size > 500

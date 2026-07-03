@@ -19,6 +19,7 @@ import analytics
 import assess as assess_mod
 import build_dashboard
 import clinical
+import coach as coach_mod
 import correlate as correlate_mod
 import custom as custom_mod
 import daily as daily_mod
@@ -32,7 +33,9 @@ import integrity
 import journal
 import labs as labs_mod
 import mood_energy
+import patterns as patterns_mod
 import reversal as reversal_mod
+import streaks as streaks_mod
 import symptoms
 import wearables as wearables_mod
 
@@ -57,6 +60,9 @@ class CycleResult:
     review_text: str = ""
     labs: dict = dataclasses.field(default_factory=dict)
     reversal: dict = dataclasses.field(default_factory=dict)
+    streaks: list = dataclasses.field(default_factory=list)
+    patterns: dict = dataclasses.field(default_factory=dict)
+    coach: list = dataclasses.field(default_factory=list)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -82,13 +88,17 @@ def _metrics_self_check(metrics: dict) -> list[str]:
 
 
 def _write_json(obj, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as fh:
+    # atomic: write to a temp file and rename into place, so a crash mid-write can never leave
+    # a half-written (invalid) artifact that the dashboard/Excel would then disagree with.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, indent=2, sort_keys=True, default=str)
+    os.replace(tmp, path)
 
 
 def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=None,
               labs_source=None,
-              now=None, window_days: int = 14, subject: str = "patient",
+              now=None, window_days: int = 14, subject: str = "patient", subject_age=None,
               walk_adherence: float | None = None, out_dir: str = ".",
               prune_retention: int = 500, dashboard: bool = False, excel: bool = False,
               dashboard_windows=analytics.STANDARD_WINDOWS,
@@ -151,9 +161,16 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
 
     # labs (liver/inflammation/hormones/…) + the diabetes-reversal view (GMI ladder, 90-day
     # projection, doctor-ready list) — the non-glucose half of the mission.
-    labs_panel = labs_mod.panel(store, now=now)
+    labs_panel = labs_mod.panel(store, now=now, age=subject_age)
     reversal_view = reversal_mod.build(daily_frame, metrics=metrics, labs_panel=labs_panel)
     violations += labs_mod.self_check(labs_panel) + reversal_mod.self_check(reversal_view)
+
+    # habit streaks (the daily loop) + time-of-day / dawn / weekday / trend-change patterns,
+    # both over the wide daily frame (patterns also uses the wide-window AGP).
+    streaks_view = streaks_mod.compute(daily_frame)
+    wide_trend = analytics.compute(store, window_days=corr_window, now=now)
+    patterns_view = patterns_mod.compute(wide_trend.get("agp", []), daily_frame)
+    violations += streaks_mod.self_check(streaks_view) + patterns_mod.self_check(patterns_view)
 
     # log-driven analytics (only meaningful once a journal exists)
     food_ranking = food_impact.rank_foods(store, now=now)
@@ -166,6 +183,12 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         symptom_result=symptoms.analyze(store, window_days=max(90, window_days), now=now),
         mood_result=mood_energy.analyze(store, window_days=max(90, window_days), now=now))
     insights_text = insights_mod.narrate(findings, metrics=metrics)
+
+    # the prescriptive layer — "Today's moves" ranked from the user's own measured levers
+    coach_moves = coach_mod.moves(metrics=metrics, experiments=experiment_results,
+                                  food_ranking=food_ranking, patterns=patterns_view,
+                                  reversal=reversal_view)
+    violations += coach_mod.self_check(coach_moves)
 
     # saved custom analyses: executed deterministically every cycle (no LLM math at run time)
     custom_cards = (custom_mod.run_registry(store, path=analyses_path, now=now)
@@ -219,11 +242,14 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             insights_text=insights_text, quarantine=quarantined,
             custom_cards=custom_cards, heartbeat=health,
             daily_frame=daily_frame, correlation=correlation, review_text=review_text,
-            labs=labs_panel, reversal=reversal_view, now=now)
+            labs=labs_panel, reversal=reversal_view, streaks=streaks_view,
+            patterns=patterns_view, coach=coach_moves, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
-            artifacts["dashboard"] = build_dashboard.write_dashboard(
-                build_dashboard.render(cockpit), os.path.join(out_dir, "dashboard.html"))
+            dash_path = os.path.join(out_dir, "dashboard.html")
+            build_dashboard.write_dashboard(build_dashboard.render(cockpit), dash_path + ".tmp")
+            os.replace(dash_path + ".tmp", dash_path)   # atomic — never serve a half-written page
+            artifacts["dashboard"] = dash_path
 
     # the 500-day Excel workbook, from the SAME store (§D rule 7) — co-published so the
     # dashboard's Export button resolves to a matching file
@@ -232,7 +258,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
                                          window_days=500)
         violations += export_excel.self_check(store, wb)
         excel_path = os.path.join(out_dir, "HealthOS_500d.xlsx")
-        wb.save(excel_path)
+        wb.save(excel_path + ".tmp")
+        os.replace(excel_path + ".tmp", excel_path)     # atomic
         artifacts["excel"] = excel_path
 
     return CycleResult(
@@ -242,5 +269,6 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         food_ranking=food_ranking, experiments=experiment_results,
         custom_cards=custom_cards, heartbeat=health, correlation=correlation,
         daily_frame=daily_frame, review_text=review_text, labs=labs_panel,
-        reversal=reversal_view, artifacts=artifacts,
+        reversal=reversal_view, streaks=streaks_view, patterns=patterns_view,
+        coach=coach_moves, artifacts=artifacts,
     )

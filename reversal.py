@@ -129,11 +129,14 @@ def doctor_list(*, labs_panel=None, metrics=None) -> list[dict]:
         v = entry.get("value")
         return v if isinstance(v, (int, float)) else None
 
-    # 1) diabetic-range glycemia -> endocrinologist
+    # 1) diabetic-range glycemia -> endocrinologist. Cite the marker that ACTUALLY crossed
+    # 6.5 (a §A provenance rule: never attribute the claim to a value that didn't trigger it).
     a1c = markers.get("hba1c", {}).get("value")
     g = gmi_val()
-    if (a1c is not None and a1c >= 6.5) or (g is not None and g >= 6.5):
-        basis = f"HbA1c {a1c:g}%" if a1c is not None else f"GMI {g:.1f}%"
+    a1c_high = a1c is not None and a1c >= 6.5
+    gmi_high = g is not None and g >= 6.5
+    if a1c_high or gmi_high:
+        basis = f"HbA1c {a1c:g}%" if a1c_high else f"GMI {g:.1f}%"
         items.append({"priority": 1, "area": "Glycemia",
                       "text": "Diabetic-range glycemia — confirm management with an endocrinologist.",
                       "based_on": basis})
@@ -167,8 +170,57 @@ def doctor_list(*, labs_panel=None, metrics=None) -> list[dict]:
     return items
 
 
+def reconcile(metrics=None, labs_panel=None) -> dict:
+    """The glycation gap: CGM-estimated A1c (GMI) vs the entered lab HbA1c.
+
+    Bergenstal 2018 is explicit that GMI is an *estimate* and often differs from measured A1c;
+    a discordance ≥0.5% is common and clinically meaningful (hemoglobinopathy, iron deficiency,
+    altered RBC turnover — all plausible in a high-inflammation male). Surfacing the gap keeps
+    the cockpit honest about which number is which.
+    """
+    g = ((metrics or {}).get("gmi_pct") or {}).get("value")
+    a1c = (((labs_panel or {}).get("markers", {}) or {}).get("hba1c") or {}).get("value")
+    if not isinstance(g, (int, float)) or not isinstance(a1c, (int, float)):
+        return {"ok": False}
+    gap = float(g) - float(a1c)
+    if abs(gap) < 0.5:
+        note = "Your CGM estimate agrees with your lab A1c."
+    else:
+        note = (f"Your CGM estimate reads {'higher' if gap > 0 else 'lower'} than your lab A1c "
+                f"by {abs(gap):.1f}% — worth mentioning to your doctor.")
+    return {"ok": True, "gmi_pct": round(float(g), 2), "lab_hba1c_pct": round(float(a1c), 2),
+            "gap_pct": round(gap, 2), "discordant": abs(gap) >= 0.5, "note": note}
+
+
+# DiRECT trial remission likelihood by weight lost from baseline (Lean 2018)
+_DIRECT_BANDS = ((15.0, 86), (10.0, 57), (5.0, 34), (0.0, 7))
+
+
+def weight_view(frame, *, labs_panel=None) -> dict:
+    """Weight loss from baseline + a DiRECT-anchored remission-likelihood band.
+
+    Weight is the strongest reversal lever for this profile, so it sits beside the GMI ladder as
+    a co-primary. Baseline = the earliest logged weight in the window; the band is the DiRECT
+    trial's observed remission rate at that amount of loss (observational, framed as odds).
+    """
+    ws = [(r["date"], r["weight_kg"]) for r in (frame or []) if r.get("weight_kg") is not None]
+    if len(ws) < 2:
+        return {"ok": False}
+    baseline = ws[0][1]
+    current = ws[-1][1]
+    kg_lost = baseline - current
+    pct = (kg_lost / baseline * 100.0) if baseline else 0.0
+    band_pct = next((p for thr, p in _DIRECT_BANDS if kg_lost >= thr), 7)
+    bmi = (((labs_panel or {}).get("markers", {}) or {}).get("bmi") or {}).get("value")
+    return {"ok": True, "baseline_kg": round(baseline, 1), "current_kg": round(current, 1),
+            "kg_lost": round(kg_lost, 1), "pct_lost": round(pct, 1),
+            "remission_band_pct": band_pct, "bmi": bmi,
+            "note": (f"At {kg_lost:.1f} kg lost, the DiRECT trial saw ~{band_pct}% reach remission."
+                     if kg_lost >= 0.5 else "Logging weight regularly powers this estimate.")}
+
+
 def build(frame, *, metrics=None, labs_panel=None, horizon_days: int = 90) -> dict:
-    """Assemble the full reversal view: ladder + projection + doctor list."""
+    """Assemble the full reversal view: ladder + projection + reconciliation + doctor list."""
     current_mean = None
     entry = (metrics or {}).get("mean_mgdl") or {}
     if isinstance(entry.get("value"), (int, float)):
@@ -181,6 +233,8 @@ def build(frame, *, metrics=None, labs_panel=None, horizon_days: int = 90) -> di
     return {
         "ladder": ladder(current_mean),
         "projection": project(frame or [], horizon_days=horizon_days),
+        "reconcile": reconcile(metrics=metrics, labs_panel=labs_panel),
+        "weight": weight_view(frame or [], labs_panel=labs_panel),
         "doctor_list": doctor_list(labs_panel=labs_panel, metrics=metrics),
     }
 
