@@ -100,6 +100,26 @@ def _fmt(v, nd=1):
     return str(v)
 
 
+def _pm(v, nd=0):
+    """Signed delta with a leading +/−, and no misleading '-0' when it rounds to zero."""
+    if v is None:
+        return "—"
+    r = round(float(v), nd)
+    if r == 0:            # kills negative zero (round(-0.03, 0) -> -0.0)
+        r = 0.0
+    return f"{r:+.{nd}f}"
+
+
+def _pmg(v):
+    """Signed delta in minimal-digits (:+g) form, with no misleading '-0'."""
+    if v is None:
+        return "—"
+    v = float(v)
+    if v == 0:            # -0.0 == 0 is True, so this normalises negative zero
+        v = 0.0
+    return f"{v:+g}"
+
+
 def _stream_of(field: str) -> str:
     return correlate.STREAMS.get(field, "other")
 
@@ -532,7 +552,7 @@ def _projection_html(proj) -> str:
             f'{proj["horizon_days"]}-day trend, GMI projects to <b>{proj["projected_gmi"]:.1f}%</b> '
             f'(mean ≈ {proj["projected_mean"]:.0f} mg/dL)</div>'
             f'<div class="muted">from {proj["current_gmi"]:.1f}% now · '
-            f'{proj["slope_per_month"]:+.1f} mg/dL per month · fit r²={proj["r2"]:.2f} · '
+            f'{_pm(proj["slope_per_month"], 1)} mg/dL per month · fit r²={proj["r2"]:.2f} · '
             f'n={proj["n"]} days · a trajectory, not a promise</div></div>')
 
 
@@ -617,7 +637,7 @@ def _weight_html(w) -> str:
         return ""
     bmi = f' · BMI {w["bmi"]:g}' if w.get("bmi") is not None else ""
     return (f'<h3 class="sec">Weight — your strongest lever</h3>'
-            f'<div class="rev-hero"><div class="rev-gmi"><span class="num">{w["kg_lost"]:+.1f}</span>'
+            f'<div class="rev-hero"><div class="rev-gmi"><span class="num">{_pm(w["kg_lost"], 1)}</span>'
             f'<label>kg from baseline ({w["baseline_kg"]:g} → {w["current_kg"]:g} kg{bmi})</label></div>'
             f'<div class="rev-prog"><div class="score-bar big">'
             f'<i style="width:{min(100, w["remission_band_pct"]):.0f}%;background:#199e70"></i></div>'
@@ -631,7 +651,7 @@ def _reconcile_html(rc) -> str:
     cls = "bad" if rc.get("discordant") else "good"
     return (f'<div class="proj {cls}"><div class="proj-main">CGM estimate (GMI '
             f'<b>{rc["gmi_pct"]:.1f}%</b>) vs lab HbA1c (<b>{rc["lab_hba1c_pct"]:.1f}%</b>) — '
-            f'gap {rc["gap_pct"]:+.1f}%</div><div class="muted">{_esc(rc["note"])}</div></div>')
+            f'gap {_pm(rc["gap_pct"], 1)}%</div><div class="muted">{_esc(rc["note"])}</div></div>')
 
 
 def _reversal_tab(c) -> str:
@@ -725,10 +745,10 @@ def _patterns_tab(c) -> str:
         cls = {"improving": "good", "worsening": "bad", "flat": ""}.get(dirn, "")
         arrow = {"improving": "↓", "worsening": "↑", "flat": "→"}.get(dirn, "→")
         drop = (f' The biggest single-week improvement was the week of {_esc(tr["biggest_drop_week"])} '
-                f'({tr["biggest_weekly_drop_mgdl"]:+.0f} mg/dL).' if tr.get("biggest_drop_week") else "")
+                f'({_pm(tr["biggest_weekly_drop_mgdl"])} mg/dL).' if tr.get("biggest_drop_week") else "")
         out.append(
             f'<div class="proj {cls}"><div class="proj-main">{arrow} Average glucose is '
-            f'<b>{dirn}</b> — {tr["overall_change_mgdl"]:+.0f} mg/dL over {tr["n_weeks"]} weeks.</div>'
+            f'<b>{dirn}</b> — {_pm(tr["overall_change_mgdl"])} mg/dL over {tr["n_weeks"]} weeks.</div>'
             f'<div class="muted">{drop.strip() or "Keep the streak going."}</div></div>')
     # time-of-day bars (typical day)
     parts = tod.get("parts") or []
@@ -751,14 +771,14 @@ def _patterns_tab(c) -> str:
         d = dawn["delta_mgdl"]
         verdict = ("a clear dawn phenomenon" if dawn.get("present")
                    else "little dawn effect")
-        cards.append(_insight_card("Dawn effect", f"{d:+.0f} mg/dL",
-                     f"04:00–08:00 runs {d:+.0f} vs the small hours — {verdict}."))
+        cards.append(_insight_card("Dawn effect", f"{_pm(d)} mg/dL",
+                     f"04:00–08:00 runs {_pm(d)} vs the small hours — {verdict}."))
     if wk.get("ok"):
         wm = wk.get("weekend_minus_weekday")
         hi, lo = wk.get("highest", {}), wk.get("lowest", {})
-        detail = (f'Weekends run {wm:+.0f} mg/dL vs weekdays. ' if wm is not None else "")
+        detail = (f'Weekends run {_pm(wm)} mg/dL vs weekdays. ' if wm is not None else "")
         detail += f'Highest {hi.get("day")} ({hi.get("mean_mgdl"):.0f}), lowest {lo.get("day")} ({lo.get("mean_mgdl"):.0f}).'
-        cards.append(_insight_card("Day of week", (f"{wm:+.0f} mg/dL" if wm is not None else hi.get("day", "—")), detail))
+        cards.append(_insight_card("Day of week", (f"{_pm(wm)} mg/dL" if wm is not None else hi.get("day", "—")), detail))
     if cards:
         out.append('<h3 class="sec">Signals</h3><div class="insight-grid">' + "".join(cards) + "</div>")
     # notable days — robust-MAD outliers, each with the logged input most out of line
@@ -977,7 +997,7 @@ def _digest_html(c) -> str:
         f'<span class="dg-vals"><b class="num">{r["this"]:g}</b>'
         f'<span class="muted"> vs {r["prior"]:g}</span></span>'
         f'<span class="dg-delta {"good" if r["better"] else ("bad" if r["better"] is False else "")}">'
-        f'{r["delta"]:+g}{_esc(r["unit"])}</span></div>' for r in dig["rows"])
+        f'{_pmg(r["delta"])}{_esc(r["unit"])}</span></div>' for r in dig["rows"])
     return (f'<h3 class="sec">This week vs last</h3>'
             f'<p class="insight" style="margin-bottom:10px">{_esc(_dig.headline(dig))}</p>'
             f'<div class="dg">{rows}</div>')

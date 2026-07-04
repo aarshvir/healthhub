@@ -148,3 +148,17 @@ def test_dashboard_does_not_plot_quarantined_value():
         assert build_dashboard.self_check(cockpit) == []
         s.close()
         integrity.cache_clear()
+
+
+def test_signed_delta_helpers_kill_negative_zero():
+    # deltas that round to zero must never render the misleading "-0"
+    assert build_dashboard._pm(-0.03) == "+0"
+    assert build_dashboard._pm(-0.0) == "+0"
+    assert build_dashboard._pm(-0.04, 1) == "+0.0"
+    assert build_dashboard._pm(-4.4) == "-4"
+    assert build_dashboard._pm(12.0) == "+12"
+    assert build_dashboard._pm(None) == "—"
+    assert build_dashboard._pmg(-0.0) == "+0"
+    assert build_dashboard._pmg(-30.0) == "-30"
+    assert build_dashboard._pmg(2.5) == "+2.5"
+    assert build_dashboard._pmg(None) == "—"
