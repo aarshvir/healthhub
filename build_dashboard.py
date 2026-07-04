@@ -761,6 +761,26 @@ def _patterns_tab(c) -> str:
         cards.append(_insight_card("Day of week", (f"{wm:+.0f} mg/dL" if wm is not None else hi.get("day", "—")), detail))
     if cards:
         out.append('<h3 class="sec">Signals</h3><div class="insight-grid">' + "".join(cards) + "</div>")
+    # notable days — robust-MAD outliers, each with the logged input most out of line
+    anoms = p.get("anomalies") or []
+    if anoms:
+        rows = []
+        for a in reversed(anoms):   # most recent first
+            hi = a.get("high")
+            cls = "bad" if hi else "good"
+            arrow = "▲" if hi else "▼"
+            drv = a.get("driver")
+            why = f' — likely {_esc(drv)}' if drv else ""
+            sigma = f'{abs(a["z"]):.1f}σ {"above" if hi else "below"} normal'
+            rows.append(
+                f'<div class="anom-row"><span class="anom-day">{_esc(str(a["date"]))}</span>'
+                f'<span class="anom-badge {cls}">{arrow} {a["mean_mgdl"]:.0f} mg/dL</span>'
+                f'<span class="anom-why muted">{sigma}{why}</span></div>')
+        out.append('<h3 class="sec">Notable days</h3>'
+                   '<p class="muted">Days whose average glucose broke ~3σ from your norm '
+                   '(robust MAD) — one wild day skews every average, so it is called out here '
+                   'with the logged input most out of line.</p>'
+                   f'<div class="anom">{"".join(rows)}</div>')
     return "".join(out)
 
 
@@ -1188,6 +1208,15 @@ border-radius:12px;padding:11px 13px}
 .ins-title{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8a99b0}
 .ins-big{font-family:var(--font-display);font-size:30px;letter-spacing:-.01em;margin:4px 0 6px}
 .ins-detail{font-size:13px;color:#c3d0e2;line-height:1.5}
+.anom{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+.anom-row{display:flex;align-items:center;gap:12px;background:#0d1320;border:1px solid #1e2636;
+border-radius:11px;padding:9px 12px;font-size:13px}
+.anom-day{flex:0 0 88px;font-family:var(--font-mono);color:#c3d0e2}
+.anom-badge{flex:0 0 auto;font-family:var(--font-mono);font-weight:600;font-size:12px;
+padding:2px 8px;border-radius:999px}
+.anom-badge.bad{color:#f0a072;background:rgba(240,160,114,.12);border:1px solid rgba(240,160,114,.3)}
+.anom-badge.good{color:#5bd47e;background:rgba(91,212,126,.12);border:1px solid rgba(91,212,126,.3)}
+.anom-why{flex:1;font-family:var(--font-mono);font-size:11.5px}
 .rev-hero{display:flex;gap:20px;align-items:center;background:linear-gradient(135deg,#111725,#161d2e);
 border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex-wrap:wrap}
 .rev-gmi span{font-size:40px;font-weight:800;color:#3987e5}.rev-gmi label{display:block;font-size:11px;color:#9aa8bd}

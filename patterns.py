@@ -118,13 +118,54 @@ def trend_change(frame) -> dict:
     }
 
 
+def _median(frame, field):
+    xs = [r[field] for r in frame if r.get(field) is not None]
+    return float(np.median(xs)) if xs else None
+
+
+def _driver(r, meds) -> str | None:
+    """A plausible one-line driver for an anomalous day (highest-deviation logged input)."""
+    cands = []
+    carbs, sleep, steps = r.get("carbs_g"), r.get("sleep_total_min"), r.get("steps")
+    if carbs is not None and meds.get("carbs_g") and carbs > meds["carbs_g"] * 1.3:
+        cands.append((carbs / meds["carbs_g"], f"high carbs ({carbs:.0f} g)"))
+    if sleep is not None and meds.get("sleep_total_min") and sleep < meds["sleep_total_min"] * 0.8:
+        cands.append((meds["sleep_total_min"] / max(sleep, 1), f"short sleep ({sleep/60:.1f} h)"))
+    if steps is not None and meds.get("steps") and steps < meds["steps"] * 0.6:
+        cands.append((meds["steps"] / max(steps, 1), f"low activity ({steps:.0f} steps)"))
+    return max(cands, key=lambda t: t[0])[1] if cands else None
+
+
+def anomalies(frame, *, z: float = 3.0) -> list[dict]:
+    """Outlier days by robust MAD z-score on mean glucose, each with a probable driver.
+
+    A single wild day (a sensor dropout, a blowout meal) otherwise silently distorts every
+    average and correlation; surfacing it — with the logged input most out of line that day —
+    turns noise into a lead."""
+    rows = [(r["date"], r["mean_mgdl"], r) for r in (frame or []) if r.get("mean_mgdl") is not None]
+    if len(rows) < 8:
+        return []
+    xs = np.array([v for _, v, _ in rows], dtype=float)
+    med = float(np.median(xs))
+    mad = float(np.median(np.abs(xs - med))) or 1.0
+    meds = {f: _median(frame, f) for f in ("carbs_g", "sleep_total_min", "steps")}
+    out = []
+    for d, v, r in rows:
+        zscore = 0.6745 * (v - med) / mad
+        if abs(zscore) >= z:
+            out.append({"date": d, "mean_mgdl": round(v, 0), "z": round(zscore, 1),
+                        "high": zscore > 0, "driver": _driver(r, meds)})
+    return sorted(out, key=lambda a: a["date"])[-6:]
+
+
 def compute(agp, frame) -> dict:
-    """All patterns for a window: time-of-day, dawn, weekday, trend-change."""
+    """All patterns for a window: time-of-day, dawn, weekday, trend-change, anomaly days."""
     return {
         "time_of_day": time_of_day(agp),
         "dawn": dawn(agp),
         "weekday": weekday_effect(frame),
         "trend": trend_change(frame),
+        "anomalies": anomalies(frame),
     }
 
 
