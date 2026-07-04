@@ -180,3 +180,12 @@ def test_journal_glucose_bridge_feeds_store(env):
     result2 = engine.run_cycle(store=st, log_source=journal.CsvLogSource(text=log_csv),
                                now=NOW, window_days=7, out_dir=str(out))
     assert len(st.glucose_all()) == 2, result2.n_stored
+
+
+def test_sufficiency_flag_present(env):
+    st, out = env
+    glucose.sync(st, glucose.FixtureSource(_core_readings()), now=NOW)
+    result = engine.run_cycle(store=st, now=NOW, window_days=14, dashboard=True, out_dir=str(out))
+    # 10 readings on a single day -> not sufficient (needs ~14 days); banner must show
+    html = (out / "dashboard.html").read_text()
+    assert "Limited data" in html

@@ -163,6 +163,17 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
     violations += (store.self_check(now=now) + analytics.self_check(trend)
                    + _metrics_self_check(metrics))
 
+    # data-sufficiency (Battelino 2019): metrics need ≥14 days AND enough active time to be
+    # trusted. Computed segfault-safe from the trend's per-day groups (never a datetimelike
+    # .iloc). Advisory — it doesn't flip validity, it tells the user when data is still thin.
+    _series = trend.get("series", [])
+    _busiest = max((r.get("n", 0) for r in _series), default=0)
+    _per_day = (trend.get("n_readings", 0) / len(_series)) if _series else 0
+    _active = (_per_day / _busiest) if _busiest else 0.0
+    sufficiency = {"days": len(_series), "n_readings": trend.get("n_readings", 0),
+                   "active_pct": round(_active * 100), "window_days": window_days,
+                   "sufficient": len(_series) >= min(14, window_days) and _active >= 0.7}
+
     # labs (liver/inflammation/hormones/…) + the diabetes-reversal view (GMI ladder, 90-day
     # projection, doctor-ready list) — the non-glucose half of the mission.
     labs_panel = labs_mod.panel(store, now=now, age=subject_age)
@@ -253,7 +264,7 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             daily_frame=daily_frame, correlation=correlation, review_text=review_text,
             labs=labs_panel, reversal=reversal_view, streaks=streaks_view,
             patterns=patterns_view, coach=coach_moves, forecast=forecast_model,
-            digest=weekly, now=now)
+            digest=weekly, sufficiency=sufficiency, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             dash_path = os.path.join(out_dir, "dashboard.html")

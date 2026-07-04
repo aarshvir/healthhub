@@ -29,6 +29,8 @@ import integrity
 
 TABS = ("Today", "Reversal", "Trends", "Patterns", "Correlations", "Analytics", "Food",
         "Experiments", "Custom", "Review", "Export")
+# the phone-native primary bar (fits without scroll); the rest live behind a "More" menu
+PRIMARY_TABS = ("Today", "Reversal", "Trends", "Correlations")
 # reserved status palette (dataviz): state colours, never reused for a data series
 STATUS_COLORS = {"good": "#0ca30c", "warning": "#fab219", "critical": "#d03b3b",
                  "unknown": "#8091a7"}
@@ -317,7 +319,8 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
                   insights_text="", quarantine=None, custom_cards=None,
                   heartbeat=None, daily_frame=None, correlation=None,
                   review_text="", labs=None, reversal=None, streaks=None,
-                  patterns=None, coach=None, forecast=None, digest=None, now=None) -> dict:
+                  patterns=None, coach=None, forecast=None, digest=None,
+                  sufficiency=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
@@ -339,7 +342,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "daily_frame": daily_frame or [], "correlation": correlation or {},
         "review_text": review_text or "", "labs": labs or {}, "reversal": reversal or {},
         "streaks": streaks or [], "patterns": patterns or {}, "coach": coach or [],
-        "forecast": forecast or {}, "digest": digest or {},
+        "forecast": forecast or {}, "digest": digest or {}, "sufficiency": sufficiency or {},
     }
 
 
@@ -476,7 +479,18 @@ def _today_tab(c) -> str:
                            source="daily",
                            freshness=_date_dot(d, gen_at, stale_days=stale_days),
                            accent=_color_of(field)))
-    return _hero(c) + _moves_card(c) + '<div class="grid">' + "".join(tiles) + "</div>"
+    return _sufficiency_banner(c) + _hero(c) + _moves_card(c) \
+        + '<div class="grid">' + "".join(tiles) + "</div>"
+
+
+def _sufficiency_banner(c) -> str:
+    """Honest 'limited data' notice (Battelino): metrics stabilise after ~14 days of good wear."""
+    s = c.get("sufficiency") or {}
+    if not s or s.get("sufficient", True):
+        return ""
+    return ('<div class="suff">⚠ Limited data — metrics below are computed from '
+            f'<b>{s.get("days", 0)} day(s)</b> ({s.get("active_pct", 0)}% active). They stabilise '
+            'after ~14 days of consistent CGM wear; read them as provisional until then.</div>')
 
 
 def _status_dot(status) -> str:
@@ -1008,14 +1022,20 @@ header{position:relative;padding:10px 16px}.hdr-glucose{font-size:22px;font-weig
 .hdr-age{color:#9aa8bd;font-size:13px}
 .refresh{position:absolute;top:10px;right:12px;background:#1f2937;color:#c3d0e2;border:0;
 width:36px;height:36px;border-radius:10px;font-size:18px;cursor:pointer}
-.navwrap{position:relative}
-.navwrap::after{content:"";position:absolute;top:0;right:0;width:26px;height:100%;
-background:linear-gradient(90deg,transparent,#0a0e16);pointer-events:none}
-nav{display:flex;gap:4px;padding:6px 12px;overflow-x:auto;scrollbar-width:none}
+.navwrap{position:relative;display:flex;align-items:center;padding:6px 12px;gap:6px}
+nav{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;flex:1;min-width:0}
 nav::-webkit-scrollbar{display:none}
 nav button{background:#1f2937;color:#c3d0e2;border:0;padding:0 14px;min-height:44px;border-radius:8px;
 cursor:pointer;white-space:nowrap;font-size:14px}nav button.active{background:#1f5fbf;color:#fff}
-nav button:focus-visible{outline:2px solid #3987e5;outline-offset:2px}
+nav button:focus-visible,.more-btn:focus-visible{outline:2px solid #3987e5;outline-offset:2px}
+.more-wrap{position:relative;flex:0 0 auto}
+.more-btn{background:#1f2937;color:#cbd5e1;border:0;padding:0 12px;min-height:44px;border-radius:8px;
+white-space:nowrap;font-size:14px;cursor:pointer}
+.more-menu{position:absolute;right:0;top:calc(100% + 6px);background:#12161f;border:1px solid #26324a;
+border-radius:12px;padding:6px;display:none;flex-direction:column;gap:2px;z-index:9;min-width:150px;
+box-shadow:0 12px 34px rgba(0,0,0,.55)}
+.more-menu.open{display:flex}
+.more-menu button{min-height:40px;text-align:left;width:100%}
 #hhtip{position:fixed;display:none;z-index:20;max-width:180px;background:#1f2937;color:#eef2f9;
 border:1px solid #334155;border-radius:8px;padding:6px 9px;font-size:12px;pointer-events:none}
 main{padding:16px;max-width:1100px;margin:0 auto}
@@ -1212,6 +1232,8 @@ text-transform:uppercase;color:#8a99b0}
 .dg-lbl{flex:1;font-size:13.5px}.dg-vals{flex:0 0 auto;font-family:var(--font-mono);font-size:13px}
 .dg-delta{flex:0 0 84px;text-align:right;font-family:var(--font-mono);font-weight:600;color:#9aa8bd}
 .dg-delta.good{color:#5bd47e}.dg-delta.bad{color:#f0a072}
+.suff{background:#241a10;border:1px solid #6b4e1a;border-radius:12px;padding:11px 14px;
+margin-bottom:14px;font-size:13.5px;color:#e0c48a;line-height:1.5}
 """
 
 _JS = """
@@ -1227,6 +1249,9 @@ nb.setAttribute('aria-selected','true');nb.tabIndex=0;nb.scrollIntoView({block:'
 // user taps push history (Back returns to the previous tab); programmatic opens replace
 if(fromNav&&history.pushState)history.pushState({tab:name},'','#'+name);
 else if(history.replaceState)history.replaceState({tab:name},'','#'+name);
+var mm=document.getElementById('moreMenu');if(mm)mm.classList.remove('open');
+var mb=document.querySelector('.more-btn');
+if(mb)mb.classList.toggle('active',!!(mm&&mm.querySelector('#navbtn-'+name)));
 window.scrollTo(0,HH_SCROLL['tab-'+name]||0);}
 window.addEventListener('popstate',function(e){var n=(e.state&&e.state.tab)||(location.hash||'').slice(1);
 if(n&&document.getElementById('tab-'+n))showTab(n);});
@@ -1242,6 +1267,10 @@ var el=document.getElementById('winpanel-'+w);if(el)el.style.display='block';
 document.querySelectorAll('.winbtn').forEach(b=>b.classList.remove('active'));
 var bb=document.getElementById('winbtn-'+w);if(bb)bb.classList.add('active');}
 function hhReload(){location.reload();}
+function toggleMore(e){e.stopPropagation();var m=document.getElementById('moreMenu');
+var open=m.classList.toggle('open');e.currentTarget.setAttribute('aria-expanded',open);}
+document.addEventListener('click',function(){var m=document.getElementById('moreMenu');
+if(m)m.classList.remove('open');});
 // tap-to-read: touch devices can't hover, so surface any data-tip on tap/click
 function hhTip(e){var el=e.target.closest('[data-tip]');if(!el)return;
 var t=document.getElementById('hhtip');if(!t){t=document.createElement('div');t.id='hhtip';
@@ -1333,11 +1362,17 @@ def render(cockpit: dict) -> str:
         "Experiments": _experiments_tab(cockpit), "Custom": _custom_tab(cockpit),
         "Review": _review_tab(cockpit), "Export": _export_tab(cockpit),
     }
-    nav = "".join(f'<button id="navbtn-{t}" role="tab" '
-                  f'aria-selected="{"true" if i==0 else "false"}" '
-                  f'aria-controls="tab-{t}" tabindex="{"0" if i==0 else "-1"}" '
-                  f'class="{"active" if i==0 else ""}" '
-                  f'onclick="showTab(\'{t}\',1)">{t}</button>' for i, t in enumerate(TABS))
+    def _navbtn(t):
+        act = (t == TABS[0])
+        return (f'<button id="navbtn-{t}" role="tab" aria-selected="{"true" if act else "false"}" '
+                f'aria-controls="tab-{t}" tabindex="{"0" if act else "-1"}" '
+                f'class="{"active" if act else ""}" onclick="showTab(\'{t}\',1)">{t}</button>')
+    primary = "".join(_navbtn(t) for t in TABS if t in PRIMARY_TABS)
+    more = "".join(_navbtn(t) for t in TABS if t not in PRIMARY_TABS)
+    nav = (f'<nav role="tablist" aria-label="Sections">{primary}</nav>'
+           '<div class="more-wrap"><button class="more-btn" onclick="toggleMore(event)" '
+           'aria-haspopup="true" aria-expanded="false">More ▾</button>'
+           f'<div class="more-menu" id="moreMenu" role="menu">{more}</div></div>')
     tabs = "".join(f'<section id="tab-{t}" role="tabpanel" aria-labelledby="navbtn-{t}" '
                    f'tabindex="0" class="tab {"active" if i==0 else ""}">'
                    f'<h2>{t}</h2>{bodies[t]}</section>' for i, t in enumerate(TABS))
@@ -1359,7 +1394,7 @@ def render(cockpit: dict) -> str:
             f'<link rel="apple-touch-icon" href="icon-192.png">'
             f'<title>Health OS</title><style>{assets.FONT_CSS}{_TOKENS}{_CSS}</style></head><body>'
             f'<div class="topbar"><header>{hdr}{banner}</header>'
-            f'<div class="navwrap"><nav role="tablist" aria-label="Sections">{nav}</nav></div></div>'
+            f'<div class="navwrap">{nav}</div></div>'
             f'<main>{tabs}</main>'
             f'<script>window.HH={cfg};window.HH_FC={json.dumps(cockpit.get("forecast") or {})};'
             f'{_JS}{_FRESH_JS}</script></body></html>')
