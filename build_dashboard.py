@@ -317,7 +317,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
                   insights_text="", quarantine=None, custom_cards=None,
                   heartbeat=None, daily_frame=None, correlation=None,
                   review_text="", labs=None, reversal=None, streaks=None,
-                  patterns=None, coach=None, now=None) -> dict:
+                  patterns=None, coach=None, forecast=None, digest=None, now=None) -> dict:
     """Assemble the data the dashboard renders, with header freshness from integrity."""
     now = integrity.now_utc() if now is None else now
     header = {"generated_at": now.isoformat(), "glucose": None}
@@ -339,6 +339,7 @@ def build_cockpit(*, metrics, trend_by_window, latest_glucose=None, wearables=No
         "daily_frame": daily_frame or [], "correlation": correlation or {},
         "review_text": review_text or "", "labs": labs or {}, "reversal": reversal or {},
         "streaks": streaks or [], "patterns": patterns or {}, "coach": coach or [],
+        "forecast": forecast or {}, "digest": digest or {},
     }
 
 
@@ -809,6 +810,34 @@ def _empty(title, body) -> str:
             f'<div class="empty-body">{_esc(body)}</div></div>')
 
 
+def _forecast_calc(c) -> str:
+    """An interactive 'will this spike?' calculator — arithmetic on Python-computed coefficients
+    (each food's per-gram response, the user's walk effect, their baseline), so it stays grounded."""
+    model = c.get("forecast") or {}
+    foods = model.get("foods") or []
+    if not foods:
+        return ""
+    opts = "".join(f'<option value="{i}">{_esc(f["item"])}</option>' for i, f in enumerate(foods))
+    walk_txt = (f" · a post-meal walk trims ~{abs(model['walk_effect']):.0f} mg/dL"
+                if model.get("walk_effect") is not None else "")
+    walk_row = ('<label class="fc-walk"><input type="checkbox" id="fcWalk" '
+                'onchange="fcCompute()"> Walk after</label>'
+                if model.get("walk_effect") is not None else "")
+    return (
+        '<h3 class="sec">Will it spike?</h3>'
+        f'<p class="muted">A projection from your own measured responses{walk_txt}. '
+        'Not a promise — your real curve varies.</p>'
+        '<div class="fc"><div class="fc-controls">'
+        f'<select id="fcFood" onchange="fcCompute()">{opts}</select>'
+        '<label class="fc-carbs">net carbs '
+        '<input type="number" id="fcCarbs" value="40" min="0" max="300" step="5" '
+        'inputmode="numeric" oninput="fcCompute()"></label>'
+        f'{walk_row}</div>'
+        '<div class="fc-out"><div><span class="num" id="fcPeak">—</span>'
+        '<label>projected peak</label></div>'
+        '<div class="fc-verdict" id="fcVerdict"></div></div></div>')
+
+
 def _food_tab(c) -> str:
     foods = c["food_ranking"]
     if not foods:
@@ -827,7 +856,9 @@ def _food_tab(c) -> str:
             f'<div class="frow-bar"><i style="width:{100*abs(dp or 0)/mx:.0f}%;background:{col}"></i></div>'
             f'<div class="frow-foot">iAUC {_fmt(f.get("mean_iauc_120"),0)} · '
             f'{_esc(f.get("n"))} meals</div></div>')
-    return ('<p class="muted">Your foods ranked by average glucose peak — worst first.</p>'
+    return (_forecast_calc(c)
+            + '<h3 class="sec">Your foods, ranked</h3>'
+            '<p class="muted">By average glucose peak — worst first.</p>'
             '<div class="frows">' + "".join(cards) + "</div>")
 
 
@@ -902,6 +933,22 @@ def _coverage_view(c) -> str:
             f'<div class="bars cov">{rows}</div>')
 
 
+def _digest_html(c) -> str:
+    dig = c.get("digest") or {}
+    if not dig.get("ok"):
+        return ""
+    import digest as _dig
+    rows = "".join(
+        f'<div class="dg-row"><span class="dg-lbl">{_esc(r["label"])}</span>'
+        f'<span class="dg-vals"><b class="num">{r["this"]:g}</b>'
+        f'<span class="muted"> vs {r["prior"]:g}</span></span>'
+        f'<span class="dg-delta {"good" if r["better"] else ("bad" if r["better"] is False else "")}">'
+        f'{r["delta"]:+g}{_esc(r["unit"])}</span></div>' for r in dig["rows"])
+    return (f'<h3 class="sec">This week vs last</h3>'
+            f'<p class="insight" style="margin-bottom:10px">{_esc(_dig.headline(dig))}</p>'
+            f'<div class="dg">{rows}</div>')
+
+
 def _review_tab(c) -> str:
     a = c["assessment"]
     head = ""
@@ -917,7 +964,7 @@ def _review_tab(c) -> str:
     ins = c["insights_text"]
     ins_html = (f'<h3 class="sec">Top findings</h3><p class="insight">{_esc(ins)}</p>'
                 if ins else "")
-    return head + lines_html + corr_html + ins_html + _coverage_view(c)
+    return head + _digest_html(c) + lines_html + corr_html + ins_html + _coverage_view(c)
 
 
 def _export_tab(c) -> str:
@@ -1148,6 +1195,23 @@ border:1px solid #1f2937;border-radius:16px;padding:16px;margin-bottom:12px;flex
 .lstat{flex:0 0 auto;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
 .lab-age{flex:0 0 auto;font-size:11px}
 @media(max-width:640px){.lab-spark,.lab-age{display:none}.lab-name{flex:0 0 84px}}
+.fc{background-image:linear-gradient(180deg,#161d2e,#111725);border:1px solid #223049;
+border-radius:14px;padding:14px}
+.fc-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.fc select,.fc input[type=number]{background:#0a0e16;color:#eef2f9;border:1px solid #26324a;
+border-radius:9px;padding:9px 10px;font-family:var(--font-body);font-size:14px;min-height:40px}
+.fc select{flex:1;min-width:150px}.fc-carbs{font-size:13px;color:#9aa8bd;display:flex;align-items:center;gap:6px}
+.fc-carbs input{width:74px}.fc-walk{font-size:13px;color:#c3d0e2;display:flex;align-items:center;gap:6px}
+.fc-out{display:flex;align-items:center;gap:18px;margin-top:14px;padding-top:12px;border-top:1px solid #1e2636}
+.fc-out .num{font-family:var(--font-display);font-size:34px;color:#eaf1fb}
+.fc-out label{display:block;font-family:var(--font-mono);font-size:10.5px;letter-spacing:.05em;
+text-transform:uppercase;color:#8a99b0}
+.fc-verdict{font-family:var(--font-mono);font-size:14px;font-weight:600}
+.dg{display:flex;flex-direction:column}
+.dg-row{display:flex;align-items:baseline;gap:10px;padding:9px 2px;border-bottom:1px solid #1a2336}
+.dg-lbl{flex:1;font-size:13.5px}.dg-vals{flex:0 0 auto;font-family:var(--font-mono);font-size:13px}
+.dg-delta{flex:0 0 84px;text-align:right;font-family:var(--font-mono);font-weight:600;color:#9aa8bd}
+.dg-delta.good{color:#5bd47e}.dg-delta.bad{color:#f0a072}
 """
 
 _JS = """
@@ -1185,8 +1249,19 @@ document.body.appendChild(t);}t.textContent=el.getAttribute('data-tip');
 t.style.left=Math.min(e.clientX,window.innerWidth-180)+'px';t.style.top=(e.clientY+14)+'px';
 t.style.display='block';clearTimeout(window._tt);window._tt=setTimeout(function(){t.style.display='none';},2600);}
 document.addEventListener('click',hhTip);
+// "will it spike?" — arithmetic on the Python-computed per-gram / walk / baseline coefficients
+function fcCompute(){var M=window.HH_FC||{},foods=M.foods||[];if(!foods.length)return;
+var sel=document.getElementById('fcFood');if(!sel)return;var f=foods[+sel.value];if(!f)return;
+var carbs=parseFloat((document.getElementById('fcCarbs')||{}).value)||0;var rise=f.per_gram*carbs;
+var w=document.getElementById('fcWalk');if(w&&w.checked&&M.walk_effect!=null)rise+=M.walk_effect;
+if(rise<0)rise=0;var peak=Math.round((M.baseline||110)+rise);
+var band=peak<=140?'tight range':peak<=180?'in range':peak<=250?'above range':'high';
+var col=peak<=140?'#2ea043':peak<=180?'#d9a021':'#e5484d';
+var pk=document.getElementById('fcPeak');pk.textContent=peak+' mg/dL';pk.style.color=col;
+var v=document.getElementById('fcVerdict');v.textContent='+'+Math.round(rise)+' mg/dL · '+band;v.style.color=col;}
 // open the tab named in the URL hash (deep-link / PWA reopen)
-(function(){var h=(location.hash||'').slice(1);if(h&&document.getElementById('tab-'+h))showTab(h);})();
+(function(){var h=(location.hash||'').slice(1);if(h&&document.getElementById('tab-'+h))showTab(h);
+if(document.getElementById('fcFood'))fcCompute();})();
 // restrained count-up on hero figures (skipped for reduced-motion)
 (function(){
 if(window.matchMedia&&matchMedia('(prefers-reduced-motion:reduce)').matches)return;
@@ -1286,7 +1361,8 @@ def render(cockpit: dict) -> str:
             f'<div class="topbar"><header>{hdr}{banner}</header>'
             f'<div class="navwrap"><nav role="tablist" aria-label="Sections">{nav}</nav></div></div>'
             f'<main>{tabs}</main>'
-            f'<script>window.HH={cfg};{_JS}{_FRESH_JS}</script></body></html>')
+            f'<script>window.HH={cfg};window.HH_FC={json.dumps(cockpit.get("forecast") or {})};'
+            f'{_JS}{_FRESH_JS}</script></body></html>')
 
 
 def write_dashboard(html_str: str, path: str = "dashboard.html") -> str:

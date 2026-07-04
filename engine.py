@@ -23,6 +23,8 @@ import coach as coach_mod
 import correlate as correlate_mod
 import custom as custom_mod
 import daily as daily_mod
+import digest as digest_mod
+import forecast as forecast_mod
 import experiments as experiments_mod
 import export_excel
 import food_impact
@@ -63,6 +65,8 @@ class CycleResult:
     streaks: list = dataclasses.field(default_factory=list)
     patterns: dict = dataclasses.field(default_factory=dict)
     coach: list = dataclasses.field(default_factory=list)
+    forecast: dict = dataclasses.field(default_factory=dict)
+    digest: dict = dataclasses.field(default_factory=dict)
     artifacts: dict = dataclasses.field(default_factory=dict)
 
     @property
@@ -190,6 +194,11 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
                                   reversal=reversal_view)
     violations += coach_mod.self_check(coach_moves)
 
+    # forward-looking: a grounded meal-spike model + the weekly "what changed" digest
+    forecast_model = forecast_mod.build(food_ranking, experiment_results, metrics)
+    weekly = digest_mod.build(daily_frame)
+    violations += forecast_mod.self_check(forecast_model) + digest_mod.self_check(weekly)
+
     # saved custom analyses: executed deterministically every cycle (no LLM math at run time)
     custom_cards = (custom_mod.run_registry(store, path=analyses_path, now=now)
                     if analyses_path else [])
@@ -243,7 +252,8 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
             custom_cards=custom_cards, heartbeat=health,
             daily_frame=daily_frame, correlation=correlation, review_text=review_text,
             labs=labs_panel, reversal=reversal_view, streaks=streaks_view,
-            patterns=patterns_view, coach=coach_moves, now=now)
+            patterns=patterns_view, coach=coach_moves, forecast=forecast_model,
+            digest=weekly, now=now)
         violations += build_dashboard.self_check(cockpit)
         if out_dir:
             dash_path = os.path.join(out_dir, "dashboard.html")
@@ -270,5 +280,5 @@ def run_cycle(*, store, glucose_source=None, log_source=None, wearables_source=N
         custom_cards=custom_cards, heartbeat=health, correlation=correlation,
         daily_frame=daily_frame, review_text=review_text, labs=labs_panel,
         reversal=reversal_view, streaks=streaks_view, patterns=patterns_view,
-        coach=coach_moves, artifacts=artifacts,
+        coach=coach_moves, forecast=forecast_model, digest=weekly, artifacts=artifacts,
     )
